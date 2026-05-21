@@ -9,7 +9,7 @@ module stamp.adoc.explorer {
     requires javafx.graphics;
     requires jfx.incubator.richtext;
     requires org.eclipse.jgit;
-    requires org.roaringbitmap;
+    requires roaringbitmap;
 
     exports design.knowledge.stamp.adoc;
     exports design.knowledge.stamp.adoc.model;
