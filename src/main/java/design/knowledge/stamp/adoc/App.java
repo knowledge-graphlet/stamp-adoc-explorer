@@ -14,17 +14,34 @@ import javafx.scene.Scene;
 import javafx.scene.layout.BorderPane;
 import javafx.stage.Stage;
 import jfx.incubator.scene.control.richtext.RichTextArea;
+import jfx.incubator.scene.control.richtext.TextPos;
+import jfx.incubator.scene.control.richtext.model.CodeTextModel;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /**
  * JavaFX entry point for the stamp-adoc-explorer.
  *
- * <p>v0 skeleton: instantiates a {@link RichTextArea} in a borderless window.
- * Subsequent iterations will: open a default file (the
- * {@code getting-started.adoc} fixture in {@code ~/ike-dev/ike-docs}),
- * run Level-2 history-walk extraction, and apply per-STAMP styled spans
- * via {@code RichTextArea}'s incubating style API.
+ * <p>v0 skeleton: loads the default fixture
+ * ({@value #DEFAULT_FILE_REL_TO_HOME}) into a {@link CodeTextModel} and
+ * displays it in a {@link RichTextArea}. No STAMP styling yet — that
+ * arrives once the {@code HistoryWalkStampExtractor} is wired up and we
+ * can translate {@link design.knowledge.stamp.adoc.model.StampFile}
+ * records into RichTextArea style applications.
+ *
+ * <p>Default fixture is the ike-docs {@code getting-started.adoc} with its
+ * two known commits — a known-good development target.
  */
 public final class App extends Application {
+
+    /** Fixture path relative to the user's home directory. */
+    static final String DEFAULT_FILE_REL_TO_HOME =
+            "ike-dev/ike-docs/src/site/asciidoc/getting-started.adoc";
+
+    private static final Path DEFAULT_FILE =
+            Path.of(System.getProperty("user.home"), DEFAULT_FILE_REL_TO_HOME);
 
     /**
      * JavaFX lifecycle entry point.
@@ -33,14 +50,35 @@ public final class App extends Application {
      */
     @Override
     public void start(Stage stage) {
-        RichTextArea area = new RichTextArea();
+        CodeTextModel model = new CodeTextModel();
+        loadInto(model, DEFAULT_FILE, stage);
 
+        RichTextArea area = new RichTextArea(model);
         BorderPane root = new BorderPane(area);
 
         Scene scene = new Scene(root, 1100, 750);
-        stage.setTitle("stamp-adoc-explorer");
         stage.setScene(scene);
         stage.show();
+    }
+
+    /**
+     * Read {@code file} as UTF-8 and insert it at the start of {@code model}.
+     * Sets the stage title to reflect the loaded path or load error.
+     *
+     * @param model destination text model
+     * @param file  fixture file to load
+     * @param stage stage whose title reflects load status
+     */
+    private static void loadInto(CodeTextModel model, Path file, Stage stage) {
+        try {
+            String content = Files.readString(file);
+            model.insertText(TextPos.ZERO, content);
+            stage.setTitle("stamp-adoc-explorer — " + file);
+        } catch (IOException ex) {
+            String message = "Failed to read " + file + "\n\n" + ex.getMessage();
+            model.insertText(TextPos.ZERO, message);
+            stage.setTitle("stamp-adoc-explorer — load error");
+        }
     }
 
     /**
