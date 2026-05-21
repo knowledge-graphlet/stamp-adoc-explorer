@@ -1,0 +1,10 @@
+target/
+.idea/
+*.iml
+*.class
+.DS_Store
+hs_err_pid*.log
+
+# IKE-Network ike-dev git-init bootstrap markers (see ~/ike-dev/CLAUDE.md)
+_git-init.sh
+_git-init.done
