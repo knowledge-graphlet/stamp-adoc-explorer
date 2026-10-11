@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>design.knowledge.stamp</groupId>
+        <artifactId>stamp-adoc-explorer</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>stamp-adoc-core</artifactId>
+    <packaging>jar</packaging>
+
+    <name>stamp-adoc-core</name>
+    <description>
+        The STAMP extraction engine: a first-parent history walk over JGit
+        that attributes every line of a file's HEAD snapshot to the commit
+        that introduced it, honoring .git-blame-ignore-revs, plus the
+        affirmation trailer format and a headless Cli. No UI dependencies.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.eclipse.jgit</groupId>
+            <artifactId>org.eclipse.jgit</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.roaringbitmap</groupId>
+            <artifactId>RoaringBitmap</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <scope>runtime</scope>
+            <!-- Each surface decides its own binding; the plugin must not
+                 carry one into the IDE. -->
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

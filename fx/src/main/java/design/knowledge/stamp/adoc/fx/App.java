@@ -7,7 +7,7 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  */
-package design.knowledge.stamp.adoc;
+package design.knowledge.stamp.adoc.fx;
 
 import javafx.application.Application;
 import javafx.scene.Scene;

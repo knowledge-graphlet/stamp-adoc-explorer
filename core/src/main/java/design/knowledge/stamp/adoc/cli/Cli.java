@@ -7,7 +7,7 @@
  *
  *     http://www.apache.org/licenses/LICENSE-2.0
  */
-package design.knowledge.stamp.adoc;
+package design.knowledge.stamp.adoc.cli;
 
 import design.knowledge.stamp.adoc.git.GitRepo;
 import design.knowledge.stamp.adoc.model.StampFile;
