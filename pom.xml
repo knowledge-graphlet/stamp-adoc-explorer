@@ -53,6 +53,14 @@
             <version>${roaringbitmap.version}</version>
         </dependency>
 
+        <!-- JGit logs through SLF4J 1.7; the no-op binding keeps the headless Cli quiet. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>1.7.36</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
