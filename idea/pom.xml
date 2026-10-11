@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>design.knowledge.stamp</groupId>
+        <artifactId>stamp-adoc-explorer</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>stamp-adoc-idea</artifactId>
+    <packaging>jar</packaging>
+
+    <name>stamp-adoc-idea</name>
+    <description>
+        IntelliJ plugin: "Annotate with STAMPs" puts the STAMP that introduced
+        each line in the editor gutter, with hover detail and per-STAMP
+        highlighting, and "Affirm Selected Lines" writes the empty signed
+        commit whose Affirms trailers cover a reviewed range. Ships as a zip
+        bundling this jar, stamp-adoc-core and JGit under lib/.
+    </description>
+
+    <!--
+        Platform artifacts come from JetBrains' Maven repositories, the same
+        slice ike-lease-plugin builds against (see its pom for the artifact
+        map). editor-ui holds the gutter API (TextAnnotationGutterProvider,
+        AnAction); vcs/vcs-impl hold the up-to-date line mapping; git-backend
+        holds the git4idea command runner.
+    -->
+    <properties>
+        <idea.build>262.9437.185</idea.build>
+        <idea.groupId>com.jetbrains.intellij.platform</idea.groupId>
+    </properties>
+    <repositories>
+        <repository>
+            <id>intellij-repository-releases</id>
+            <url>https://www.jetbrains.com/intellij-repository/releases</url>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+            <id>intellij-dependencies</id>
+            <url>https://cache-redirector.jetbrains.com/intellij-dependencies</url>
+            <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <dependency>
+            <groupId>design.knowledge.stamp</groupId>
+            <artifactId>stamp-adoc-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Project, Document, VirtualFile, Task, markup model -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>core</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Logger, Disposer, Key -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>util</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- JBColor -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>util-ui</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Editor, EditorGutter, TextAnnotationGutterProvider, AnAction -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>editor-ui</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Messages, DefaultActionGroup -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>ide</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- NotificationGroupManager -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>ide-core</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>project-model</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- ActiveAnnotationGutter, UpToDateLineNumberProvider, VcsException -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>vcs</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- UpToDateLineNumberProviderImpl -->
+        <dependency>
+            <groupId>${idea.groupId}</groupId>
+            <artifactId>vcs-impl</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- GitUtil, GitLineHandler, Git, GitCommand -->
+        <dependency>
+            <groupId>com.jetbrains.intellij.vcs</groupId>
+            <artifactId>git-backend</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.jetbrains.intellij.vcs</groupId>
+            <artifactId>git-shared</artifactId>
+            <version>${idea.build}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <version>26.0.2</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <resources>
+            <!-- plugin.xml is filtered so its <version> tracks this POM. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>META-INF/plugin.xml</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>META-INF/plugin.xml</exclude>
+                </excludes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-assembly-plugin</artifactId>
+                <configuration>
+                    <appendAssemblyId>false</appendAssemblyId>
+                    <descriptors>
+                        <descriptor>src/assembly/plugin-zip.xml</descriptor>
+                    </descriptors>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>plugin-zip</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>single</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,53 @@
+<idea-plugin>
+    <id>design.knowledge.stamp.adoc</id>
+    <name>STAMP Annotations</name>
+    <!-- Filtered from the Maven project version. -->
+    <version>${project.version}</version>
+    <vendor email="kec@knowledge.design" url="https://knowledge.design">knowledge.design</vendor>
+
+    <description><![CDATA[
+        Shows, beside each line of a file, the STAMP that introduced it: the
+        commit, as the Status, Time, Author, Module and Path coordinates
+        a Tinkar version carries. The attribution comes from a first-parent
+        history walk over the repository, honoring
+        <code>.git-blame-ignore-revs</code>, so a formatting reflow never takes
+        authorship. Lines changed in the editor but not yet committed show no
+        STAMP: theirs is made at commit time.
+        <br/><br/>
+        <b>Annotate with STAMPs</b> (gutter menu, VCS menu) opens the gutter;
+        clicking a STAMP highlights every line it introduced.
+        <b>Affirm Selected Lines</b> records review of a range as an empty
+        signed commit carrying <code>Affirms:</code> trailers, which the walker
+        will attach to those lines under the <code>affirmed</code> role.
+        <br/><br/>
+        Design: <code>dev-stamp-adoc-attribution</code> and
+        <code>dev-stamp-affirmation</code> in ike-lab-documents;
+        tracked in IKE-Network/ike-issues#468.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
+    <!-- Repository roots and the commit runner come from the git plugin. -->
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="STAMP Annotations" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <action id="stamp.adoc.Annotate"
+                class="design.knowledge.stamp.adoc.idea.AnnotateWithStampsAction"
+                text="Annotate with STAMPs"
+                description="Show, beside each line, the STAMP (commit) that introduced it">
+            <add-to-group group-id="EditorGutterPopupMenu" anchor="first"/>
+            <add-to-group group-id="VcsGroups" anchor="last"/>
+        </action>
+        <action id="stamp.adoc.Affirm"
+                class="design.knowledge.stamp.adoc.idea.AffirmLinesAction"
+                text="Affirm Selected Lines…"
+                description="Record an empty signed commit whose Affirms trailers cover the selected lines as committed at HEAD">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="VcsGroups" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>

@@ -1,0 +1,30 @@
+<assembly xmlns="http://maven.apache.org/ASSEMBLY/2.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/ASSEMBLY/2.2.0
+          http://maven.apache.org/xsd/assembly-2.2.0.xsd">
+    <!--
+        An IntelliJ plugin distribution is a zip containing one directory
+        named for the plugin, with its jars under lib/:
+            stamp-adoc-idea/
+              lib/
+                stamp-adoc-idea-<version>.jar
+                stamp-adoc-core-<version>.jar
+                org.eclipse.jgit-<version>.jar, RoaringBitmap, JavaEWAH, ...
+        The dependency set carries this jar plus its runtime dependencies;
+        the provided IDE platform jars stay out.
+        Install through Settings > Plugins > ⚙ > Install Plugin from Disk.
+    -->
+    <id>plugin</id>
+    <formats>
+        <format>zip</format>
+    </formats>
+    <includeBaseDirectory>true</includeBaseDirectory>
+    <baseDirectory>${project.artifactId}</baseDirectory>
+    <dependencySets>
+        <dependencySet>
+            <outputDirectory>lib</outputDirectory>
+            <useProjectArtifact>true</useProjectArtifact>
+            <scope>runtime</scope>
+        </dependencySet>
+    </dependencySets>
+</assembly>
