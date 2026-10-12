@@ -30,10 +30,10 @@
              raises the level. -->
         <maven.compiler.release>21</maven.compiler.release>
         <javafx.version>26</javafx.version>
-        <!-- JGit as the JPMS-wrapped module the Komet runtime ships (org.eclipse.jgit@6.10.0),
-             so the core resolves against the same module in Komet's boot layer and nothing
+        <!-- JGit as the JPMS-wrapped module the Komet runtime ships (dev.ikm.jpms.jgit@7.2.0,
+             komet-bom's jgit.version), so the core resolves against the same module in Komet's boot layer and nothing
              arrives as an automatic module. RoaringBitmap likewise tracks the runtime's line. -->
-        <jgit.version>6.10.0.202406032230-r-r5</jgit.version>
+        <jgit.version>7.2.0.202503040940-r-r5</jgit.version>
         <roaringbitmap.version>1.6.9</roaringbitmap.version>
         <slf4j.version>1.7.36</slf4j.version>
         <junit.version>5.11.4</junit.version>

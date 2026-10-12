@@ -5,7 +5,7 @@
  * @see <a href="https://github.com/IKE-Network/ike-issues/issues/468">IKE-Network/ike-issues#468</a>
  */
 module stamp.adoc.core {
-    requires org.eclipse.jgit;
+    requires dev.ikm.jpms.jgit;
     // StampRecord exposes RoaringBitmap line sets, so consumers read the type through this module.
     requires transitive roaringbitmap;
 
