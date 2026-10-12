@@ -172,9 +172,16 @@ final class StampGutter implements ActiveAnnotationGutter {
         return EditorFontType.PLAIN;
     }
 
+    /**
+     * The scheme's annotation text color, the key Git Annotate paints with.
+     * The platform has no fallback here: a null key leaves the Graphics
+     * color at the background just filled, and the text paints invisibly.
+     */
+    private static final ColorKey TEXT = ColorKey.createColorKey("ANNOTATIONS_COLOR");
+
     @Override
-    public @Nullable ColorKey getColor(int line, Editor editor) {
-        return null;
+    public ColorKey getColor(int line, Editor editor) {
+        return TEXT;
     }
 
     @Override
