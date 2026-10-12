@@ -6,9 +6,11 @@
  */
 module stamp.adoc.core {
     requires org.eclipse.jgit;
-    requires roaringbitmap;
+    // StampRecord exposes RoaringBitmap line sets, so consumers read the type through this module.
+    requires transitive roaringbitmap;
 
     exports design.knowledge.stamp.adoc.model;
     exports design.knowledge.stamp.adoc.git;
+    exports design.knowledge.stamp.adoc.identity;
     exports design.knowledge.stamp.adoc.cli;
 }

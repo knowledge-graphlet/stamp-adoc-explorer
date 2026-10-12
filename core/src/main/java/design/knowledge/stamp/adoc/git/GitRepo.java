@@ -126,6 +126,14 @@ public final class GitRepo implements AutoCloseable {
     }
 
     /**
+     * @return the short name of the checked-out branch, or the detached HEAD's SHA
+     * @throws IOException if HEAD cannot be read
+     */
+    public String branch() throws IOException {
+        return repository.getBranch();
+    }
+
+    /**
      * @return the working-tree root passed to {@link #open(Path)}
      */
     public Path repoRoot() {
