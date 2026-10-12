@@ -93,16 +93,28 @@ public final class GitRepo implements AutoCloseable {
      * @throws IOException if HEAD cannot be read or the file is not in it
      */
     public List<String> headLines(Path file) throws IOException {
+        return linesAt(Constants.HEAD, file);
+    }
+
+    /**
+     * Read a file as committed at a revision.
+     *
+     * @param revision anything {@code git rev-parse} accepts, abbreviated SHAs included
+     * @param file     path within the repository, absolute or root-relative
+     * @return the committed lines, without line terminators
+     * @throws IOException if the revision is unknown or the file is not in it
+     */
+    public List<String> linesAt(String revision, Path file) throws IOException {
         Path relative = file.isAbsolute() ? repoRoot.relativize(file) : file;
         String gitPath = relative.toString().replace('\\', '/');
-        ObjectId head = repository.resolve(Constants.HEAD);
-        if (head == null) {
-            throw new IOException("no HEAD commit in " + repoRoot);
+        ObjectId id = repository.resolve(revision);
+        if (id == null) {
+            throw new IOException("unknown revision " + revision + " in " + repoRoot);
         }
         try (RevWalk walk = new RevWalk(repository);
-             TreeWalk tw = TreeWalk.forPath(repository, gitPath, walk.parseCommit(head).getTree())) {
+             TreeWalk tw = TreeWalk.forPath(repository, gitPath, walk.parseCommit(id).getTree())) {
             if (tw == null) {
-                throw new IOException(gitPath + " is not committed at HEAD");
+                throw new IOException(gitPath + " is not committed at " + revision);
             }
             RawText text = new RawText(repository.open(tw.getObjectId(0)).getBytes());
             List<String> lines = new ArrayList<>(text.size());

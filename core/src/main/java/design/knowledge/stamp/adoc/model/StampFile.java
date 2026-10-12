@@ -10,26 +10,23 @@
 package design.knowledge.stamp.adoc.model;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * A snapshot of STAMP attribution for a single file at a single git revision.
+ * STAMP attribution of one file at one revision.
  *
- * <p>The model is STAMP-keyed, not line-keyed: each entry in {@link #stamps()}
- * is one unique attribution with a {@link org.roaringbitmap.RoaringBitmap}
- * of the lines (1-based, in the snapshot's line-number space) it covers.
- *
- * @param file         path of the file relative to its containing repository
- * @param revisionSha  git SHA of the revision this snapshot reflects (HEAD in v1)
- * @param ignoredRevs  SHAs honored from {@code .git-blame-ignore-revs} during
- *                     extraction
- * @param stamps       map from {@link StampId} to {@link StampRecord} for every
- *                     unique attribution touching this snapshot
+ * @param file        the file, relative to its repository root
+ * @param revisionSha the revision the snapshot describes (empty on an unborn branch)
+ * @param ignoredRevs commits skipped for authorship through {@code .git-blame-ignore-revs}
+ * @param stamps      every STAMP holding at least one current line under some role
+ * @param problems    affirmations that could not be applied, one human-readable line each
  */
 public record StampFile(
         Path file,
         String revisionSha,
         Set<String> ignoredRevs,
-        Map<StampId, StampRecord> stamps
+        Map<StampId, StampRecord> stamps,
+        List<String> problems
 ) { }

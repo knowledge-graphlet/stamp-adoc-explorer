@@ -15,28 +15,20 @@ import java.nio.file.Path;
 import java.time.Instant;
 
 /**
- * One unique STAMP attribution and the set of lines it covers within a
- * {@link StampFile} snapshot.
+ * One STAMP of a file: a commit, read as the Status, Time, Author, Module
+ * and Path coordinates, with the current-snapshot lines it holds under each
+ * line role.
  *
- * <p>v1 carries a single role-tagged bitmap, {@link #introduced()}, recording
- * the lines this STAMP introduced. Future role-tagged bitmaps
- * ({@code modified}, {@code cancelled}) join in v1.1+ when withdrawal /
- * cancellation tracking lands; their absence in v1 reflects the active-only
- * scope.
- *
- * @param id          stable identifier for this STAMP (derived from commit
- *                    + author + time + module via the identity adapter)
- * @param commitSha   raw git commit SHA backing this STAMP
- * @param status      lifecycle status of this STAMP (v1: always
- *                    {@link Status#ACTIVE})
- * @param time        author time of the commit
- * @param author      author identity (name + email; will be normalized via
- *                    the mailmap-equivalent registry in a later milestone)
- * @param module      path of the file at the time of the commit
- *                    (rename-aware via JGit's diff machinery)
- * @param summary     commit subject line, useful as hover content
- * @param introduced  lines (1-based) in the {@link StampFile} snapshot that
- *                    were introduced by this STAMP
+ * @param id         the STAMP identity (the commit SHA for now)
+ * @param commitSha  the full commit SHA
+ * @param status     {@link Status#ACTIVE} when the commit introduced lines, {@link Status#AFFIRMED} when it only affirmed them
+ * @param time       the author time of the commit
+ * @param author     the commit author
+ * @param module     the path the file had when the commit was made
+ * @param summary    the commit subject, for hover text
+ * @param introduced 1-based current lines this commit introduced
+ * @param affirmed   1-based current lines this commit affirmed through {@code Affirms:} trailers
+ * @param signed     whether the commit carries a signature (presence, not yet verification)
  */
 public record StampRecord(
         StampId id,
@@ -46,5 +38,7 @@ public record StampRecord(
         Person author,
         Path module,
         String summary,
-        RoaringBitmap introduced
+        RoaringBitmap introduced,
+        RoaringBitmap affirmed,
+        boolean signed
 ) { }

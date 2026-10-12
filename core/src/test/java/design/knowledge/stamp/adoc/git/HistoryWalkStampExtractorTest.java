@@ -9,8 +9,11 @@
  */
 package design.knowledge.stamp.adoc.git;
 
+import design.knowledge.stamp.adoc.model.Affirmation;
 import design.knowledge.stamp.adoc.model.StampFile;
+import design.knowledge.stamp.adoc.model.StampId;
 import design.knowledge.stamp.adoc.model.StampRecord;
+import design.knowledge.stamp.adoc.model.Status;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeCommand;
 import org.eclipse.jgit.api.MergeResult;
@@ -28,8 +31,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -123,6 +129,60 @@ class HistoryWalkStampExtractorTest {
     }
 
     @Test
+    void affirmationsAttachToLinesAndRideUnrelatedEdits() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        RevCommit rita = affirm("rita", "doc.adoc", 2, 3, a);
+        commit("doc.adoc", "bob", "one-b", "two", "three");            // an edit elsewhere leaves the affirmation alone
+        RevCommit carol = commit("doc.adoc", "carol", "one-b", "two", "three-c");   // editing an affirmed line drops it
+
+        StampFile head = stampsOf("doc.adoc");
+        StampRecord affirmation = head.stamps().get(id(rita));
+
+        assertEquals(Status.AFFIRMED, affirmation.status());
+        assertEquals("rita", affirmation.author().name());
+        assertEquals(Set.of(2), lines(affirmation.affirmed()));
+        assertTrue(affirmation.introduced().isEmpty());
+        assertFalse(affirmation.signed());
+        assertEquals(Set.of(3), lines(head.stamps().get(id(carol)).introduced()));
+        assertTrue(head.problems().isEmpty(), head.problems().toString());
+    }
+
+    @Test
+    void affirmationAnchoredBeforeALaterInsertionMapsForward() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        commit("doc.adoc", "bob", "title", "one", "two", "three");
+        RevCommit rita = affirm("rita", "doc.adoc", 2, 3, a);           // "two" and "three" as numbered at a
+
+        assertEquals(Set.of(3, 4), lines(stampsOf("doc.adoc").stamps().get(id(rita)).affirmed()));
+    }
+
+    @Test
+    void twoAffirmersOnOneLineAreBothKept() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two");
+        RevCommit rita = affirm("rita", "doc.adoc", 1, 2, a);
+        RevCommit sam = affirm("sam", "doc.adoc", 2, 2, a);
+
+        StampFile head = stampsOf("doc.adoc");
+
+        assertEquals(Set.of(1, 2), lines(head.stamps().get(id(rita)).affirmed()));
+        assertEquals(Set.of(2), lines(head.stamps().get(id(sam)).affirmed()));
+    }
+
+    @Test
+    void staleOrMalformedAffirmationsAreReportedNotApplied() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two");
+        RevCommit wrongHash = emptyCommit("rita", "Affirm doc.adoc 1-2\n\nAffirms: doc.adoc:1-2@" + sha(a) + "#000000\n");
+        RevCommit malformed = emptyCommit("sam", "Affirm\n\nAffirms: doc.adoc lines one and two\n");
+
+        StampFile head = stampsOf("doc.adoc");
+
+        assertFalse(head.stamps().containsKey(id(wrongHash)));
+        assertFalse(head.stamps().containsKey(id(malformed)));
+        assertEquals(2, head.problems().size(), head.problems().toString());
+        assertEquals(List.of(sha(a), sha(a)), attribution("doc.adoc"));
+    }
+
+    @Test
     void emptyRepositoryYieldsNoStamps() throws Exception {
         Files.writeString(root.resolve("doc.adoc"), "uncommitted\n");
 
@@ -159,7 +219,32 @@ class HistoryWalkStampExtractorTest {
     }
 
     private static StampRecord record(RevCommit c) {
-        return new StampRecord(new design.knowledge.stamp.adoc.model.StampId(c.name()), c.name(), null, null, null, null, null, null);
+        return new StampRecord(id(c), c.name(), null, null, null, null, null, null, null, false);
+    }
+
+    private static StampId id(RevCommit c) {
+        return new StampId(c.name());
+    }
+
+    private static Set<Integer> lines(org.roaringbitmap.RoaringBitmap bitmap) {
+        Set<Integer> set = new TreeSet<>();
+        bitmap.forEach((int line) -> set.add(line));
+        return set;
+    }
+
+    /** An empty commit by {@code author} affirming lines {@code from}–{@code to} of {@code file} as committed at {@code rev}. */
+    private RevCommit affirm(String author, String file, int from, int to, RevCommit rev) throws Exception {
+        List<String> content;
+        try (GitRepo repo = GitRepo.open(root)) {
+            content = repo.linesAt(rev.name(), Path.of(file));
+        }
+        Affirmation a = Affirmation.of(Path.of(file), from, to, rev.name(), content);
+        return emptyCommit(author, "Affirm " + file + " " + from + "-" + to + "\n\n" + a.trailer() + "\n");
+    }
+
+    private RevCommit emptyCommit(String author, String message) throws Exception {
+        PersonIdent who = ident(author);
+        return git.commit().setAllowEmpty(true).setAuthor(who).setCommitter(who).setMessage(message).call();
     }
 
     private static String sha(RevCommit c) {

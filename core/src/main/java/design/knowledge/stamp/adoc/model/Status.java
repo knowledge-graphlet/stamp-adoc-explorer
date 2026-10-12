@@ -9,14 +9,13 @@
  */
 package design.knowledge.stamp.adoc.model;
 
-/**
- * Lifecycle status of a STAMP.
- *
- * <p>v1 ships {@link #ACTIVE} only. {@code WITHDRAWN} and {@code CANCELLED}
- * are reserved for v1.1+ once history-walk-derived transition events are
- * exposed via {@code StampHistory#events()}.
- */
+/** The status coordinate of a STAMP, as it bears on the current snapshot. */
 public enum Status {
-    /** Lines covered by this STAMP exist in the current snapshot. */
-    ACTIVE
+    /** The commit introduced lines that exist in the current snapshot. */
+    ACTIVE,
+    /**
+     * The commit affirmed lines that exist in the current snapshot without
+     * introducing any: a review recorded as {@code Affirms:} trailers.
+     */
+    AFFIRMED
 }

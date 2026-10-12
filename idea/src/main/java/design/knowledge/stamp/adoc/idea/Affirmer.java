@@ -100,7 +100,7 @@ final class Affirmer {
                     StampNotifications.error(project, "Cannot affirm " + file.getName(), failure);
                     return;
                 }
-                confirmAndCommit(project, root, relative, affirmations);
+                confirmAndCommit(project, editor, file, root, relative, affirmations);
             }
         }.queue();
     }
@@ -121,7 +121,8 @@ final class Affirmer {
         return ranges;
     }
 
-    private static void confirmAndCommit(Project project, VirtualFile root, Path relative, List<Affirmation> affirmations) {
+    private static void confirmAndCommit(Project project, Editor editor, VirtualFile file, VirtualFile root, Path relative,
+                                         List<Affirmation> affirmations) {
         String trailers = affirmations.stream().map(Affirmation::trailer).collect(Collectors.joining("\n"));
         int lines = affirmations.stream().mapToInt(Affirmation::lineCount).sum();
         String subject = "Affirm " + relative + " " + affirmations.stream()
@@ -164,6 +165,7 @@ final class Affirmer {
                 if (result.success()) {
                     StampNotifications.info(project, "Affirmed " + lines + " line" + (lines == 1 ? "" : "s") + " of " + relative.getFileName(),
                             trailers.replace("\n", "<br>"));
+                    StampAnnotator.refresh(project, editor, file);        // the gutter shows the new check marks
                 } else {
                     StampNotifications.error(project, "Affirmation commit failed", result.getErrorOutputAsJoinedString());
                 }

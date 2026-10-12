@@ -44,10 +44,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The gutter column: one STAMP per committed line, blank for lines the
- * editor has changed since HEAD (their STAMP is made at commit time).
- * Clicking a line highlights every line its STAMP introduced; the popup
- * offers the id for copying and an affirmation of the STAMP's lines.
+ * The gutter column: one STAMP per committed line, with a check mark when
+ * the line has been affirmed, blank for lines the editor has changed since
+ * HEAD (their STAMP is made at commit time). Clicking a line highlights
+ * every line its STAMP introduced; the popup offers the id for copying, an
+ * affirmation of the STAMP's lines, and the review queue — the lines no
+ * one has affirmed yet.
  */
 final class StampGutter implements ActiveAnnotationGutter {
 
@@ -75,10 +77,14 @@ final class StampGutter implements ActiveAnnotationGutter {
     private final Path relative;
     private final StampFile stamps;
     private final StampRecord[] byHeadLine;            // 1-based
+    private final List<List<StampRecord>> affirmersByHeadLine;   // 1-based, null = unaffirmed
     private final Map<StampId, Integer> order = new HashMap<>();
     private final UpToDateLineNumberProvider upToDate;
     private final List<RangeHighlighter> highlights = new ArrayList<>();
     private @Nullable StampId highlighted;
+    private boolean queueShown;
+
+    private static final JBColor QUEUE = new JBColor(new Color(0xFFF3CD), new Color(0x5A4A1F));
 
     StampGutter(Project project, Editor editor, VirtualFile file, Path relative, StampFile stamps) {
         this.project = project;
@@ -86,14 +92,23 @@ final class StampGutter implements ActiveAnnotationGutter {
         this.file = file;
         this.relative = relative;
         this.stamps = stamps;
-        int last = stamps.stamps().values().stream().mapToInt(r -> r.introduced().isEmpty() ? 0 : r.introduced().last()).max().orElse(0);
+        int last = stamps.stamps().values().stream()
+                .mapToInt(r -> Math.max(r.introduced().isEmpty() ? 0 : r.introduced().last(), r.affirmed().isEmpty() ? 0 : r.affirmed().last()))
+                .max().orElse(0);
         this.byHeadLine = new StampRecord[last + 1];
+        this.affirmersByHeadLine = new ArrayList<>(java.util.Collections.nCopies(last + 1, (List<StampRecord>) null));
         List<StampRecord> byTime = new ArrayList<>(stamps.stamps().values());
         byTime.sort(Comparator.comparing(StampRecord::time));
         for (int i = 0; i < byTime.size(); i++) {
             StampRecord r = byTime.get(i);
             order.put(r.id(), i);
             r.introduced().forEach((int line) -> byHeadLine[line] = r);
+            r.affirmed().forEach((int line) -> {
+                if (affirmersByHeadLine.get(line) == null) {
+                    affirmersByHeadLine.set(line, new ArrayList<>(2));
+                }
+                affirmersByHeadLine.get(line).add(r);
+            });
         }
         this.upToDate = new UpToDateLineNumberProviderImpl(editor.getDocument(), project);
     }
@@ -106,6 +121,28 @@ final class StampGutter implements ActiveAnnotationGutter {
         }
         int number = head + 1;
         return number < byHeadLine.length ? byHeadLine[number] : null;
+    }
+
+    /** Who has affirmed an editor line, or null when no one has or the line is changed since HEAD. */
+    @Nullable List<StampRecord> affirmersAt(int editorLine) {
+        int head = upToDate.getLineNumber(editorLine);
+        if (head < 0) {
+            return null;
+        }
+        int number = head + 1;
+        return number < affirmersByHeadLine.size() ? affirmersByHeadLine.get(number) : null;
+    }
+
+    /** Editor lines (0-based) that have a STAMP but no affirmation: the review queue. */
+    private List<Integer> unaffirmedEditorLines() {
+        List<Integer> lines = new ArrayList<>();
+        int count = editor.getDocument().getLineCount();
+        for (int line = 0; line < count; line++) {
+            if (at(line) != null && affirmersAt(line) == null) {
+                lines.add(line);
+            }
+        }
+        return lines;
     }
 
     /** Editor lines (0-based) currently showing {@code stamp}, through the up-to-date mapping. */
@@ -141,7 +178,8 @@ final class StampGutter implements ActiveAnnotationGutter {
         if (author.length() > AUTHOR_WIDTH) {
             author = author.substring(0, AUTHOR_WIDTH - 1) + "…";
         }
-        return shortSha(r) + "  " + DAY.format(r.time()) + "  " + author;
+        List<StampRecord> who = affirmersAt(line);
+        return shortSha(r) + "  " + DAY.format(r.time()) + "  " + author + (who == null ? "" : "  ✓");
     }
 
     @Override
@@ -159,7 +197,22 @@ final class StampGutter implements ActiveAnnotationGutter {
                 + "<b>M</b>odule: " + escape(moduleOf(r)) + "<br>"
                 + "<b>P</b>ath: " + escape(r.module().toString()) + "<br>"
                 + "Introduced " + r.introduced().getCardinality() + " of the " + (byHeadLine.length - 1) + " lines at HEAD"
-                + "<br><i>Click to highlight them.</i></html>";
+                + affirmationHtml(line)
+                + "<br><i>Click to highlight the STAMP's lines.</i></html>";
+    }
+
+    private String affirmationHtml(int line) {
+        List<StampRecord> who = affirmersAt(line);
+        if (who == null) {
+            return "<br><b>Not yet affirmed.</b>";
+        }
+        StringBuilder html = new StringBuilder();
+        for (StampRecord a : who) {
+            html.append("<br><b>✓ Affirmed</b> by ").append(escape(a.author().name()))
+                    .append(" on ").append(MOMENT.format(a.time()))
+                    .append(a.signed() ? ", signed commit " : ", unsigned commit ").append(shortSha(a));
+        }
+        return html.toString();
     }
 
     private String moduleOf(StampRecord r) {
@@ -208,6 +261,13 @@ final class StampGutter implements ActiveAnnotationGutter {
                 }
             });
         }
+        int queue = unaffirmedEditorLines().size();
+        actions.add(new AnAction(queueShown ? "Hide Review Queue" : "Highlight Review Queue (" + queue + " unaffirmed line" + (queue == 1 ? "" : "s") + ")") {
+            @Override
+            public void actionPerformed(@NotNull AnActionEvent e) {
+                toggleQueue();
+            }
+        });
         actions.add(new AnAction("Close STAMP Annotations") {
             @Override
             public void actionPerformed(@NotNull AnActionEvent e) {
@@ -225,10 +285,25 @@ final class StampGutter implements ActiveAnnotationGutter {
 
     // ── EditorGutterAction ────────────────────────────────────────────────────
 
+    private void toggleQueue() {
+        clearHighlights();
+        highlighted = null;
+        queueShown = !queueShown;
+        if (!queueShown) {
+            return;
+        }
+        TextAttributes attributes = new TextAttributes();
+        attributes.setBackgroundColor(QUEUE);
+        for (int editorLine : unaffirmedEditorLines()) {
+            highlights.add(editor.getMarkupModel().addLineHighlighter(editorLine, HighlighterLayer.SELECTION - 1, attributes));
+        }
+    }
+
     @Override
     public void doAction(int line) {
         StampRecord r = at(line);
         clearHighlights();
+        queueShown = false;
         if (r == null || r.id().equals(highlighted)) {
             highlighted = null;
             return;
