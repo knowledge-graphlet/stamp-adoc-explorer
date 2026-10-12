@@ -19,5 +19,9 @@ java -cp core/target/classes:$(./mvnw -q -f core dependency:build-classpath -Dmd
 Install the plugin through *Settings › Plugins › ⚙ › Install Plugin from
 Disk…*, or unzip it into the IDE's `plugins/` directory, then restart.
 
-Build with the wrapper: it pins Maven 4.0.0-rc-5. rc-7's conflict resolver
-exhausts the heap on the IntelliJ platform dependency graph.
+`.mvn/maven.config` pins the classic dependency conflict resolver
+(`-Daether.conflictResolver.impl=classic`). The path-based resolver that
+Maven 4.0.0-rc-7 (Resolver 2.0.23) selects by default exhausts a 6 GB
+heap within seconds on the IntelliJ platform dependency graph, which
+is small (344 artifacts) but diamond-dense (2,410 duplicate edges for
+342 kept nodes). With the pin the build passes under rc-5 and rc-7 alike.
