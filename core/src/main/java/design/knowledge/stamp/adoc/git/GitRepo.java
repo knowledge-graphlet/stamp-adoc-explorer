@@ -19,6 +19,7 @@ import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
 import org.eclipse.jgit.treewalk.TreeWalk;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -123,6 +124,33 @@ public final class GitRepo implements AutoCloseable {
             }
             return lines;
         }
+    }
+
+    /**
+     * Find the working-tree root that contains a file: the nearest ancestor
+     * holding a {@code .git} entry (a directory, or the file a worktree or
+     * submodule leaves there).
+     *
+     * @param file a file or directory, absolute or relative to the working directory
+     * @return the root, or empty when no ancestor is a git working tree
+     */
+    public static java.util.Optional<Path> findRoot(Path file) {
+        Path dir = file.toAbsolutePath().normalize();
+        if (!Files.isDirectory(dir)) {
+            dir = dir.getParent();
+        }
+        while (dir != null) {
+            if (Files.exists(dir.resolve(".git"))) {
+                return java.util.Optional.of(dir);
+            }
+            dir = dir.getParent();
+        }
+        return java.util.Optional.empty();
+    }
+
+    /** @return the underlying JGit repository, for callers that need git operations beyond this API */
+    public Repository repository() {
+        return repository;
     }
 
     /**
