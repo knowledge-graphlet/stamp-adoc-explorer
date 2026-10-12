@@ -10,15 +10,12 @@
 package design.knowledge.stamp.adoc.model;
 
 import java.nio.file.Path;
+import java.util.List;
 
 /**
- * Time-traveling view of STAMP attribution for a single file.
- *
- * <p>A {@code StampHistory} owns the accumulated per-commit state from a
- * Level-2 history walk; individual {@link StampFile} snapshots are produced
- * from that state on demand. v1 exposes only {@link #atHead()}; the
- * {@code asOf(revision)} and {@code events()} methods land additively in
- * v1.1+ once withdrawal / cancellation modeling is in scope.
+ * The time-traveling view of one file's STAMP attribution: a snapshot at
+ * HEAD or at any commit on the first-parent chain, and the event stream a
+ * graph materializer replays.
  */
 public interface StampHistory {
 
@@ -34,7 +31,19 @@ public interface StampHistory {
      */
     StampFile atHead();
 
-    // v1.1+:
-    // StampFile asOf(org.eclipse.jgit.lib.ObjectId revision);
-    // java.util.stream.Stream<StampEvent> events();
+    /**
+     * The snapshot as the file stood at a revision, in that revision's line
+     * numbers.
+     *
+     * @param revision anything {@code git rev-parse} accepts, on HEAD's first-parent chain
+     * @return the snapshot, empty when the file did not yet exist there
+     * @throws IllegalArgumentException if the revision is unknown or off the chain
+     */
+    StampFile asOf(String revision);
+
+    /**
+     * @return one event per first-parent commit that changed or affirmed
+     *         the file, oldest first
+     */
+    List<CommitEvent> events();
 }

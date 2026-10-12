@@ -9,8 +9,10 @@
  */
 package design.knowledge.stamp.adoc.identity;
 
+import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.Person;
 import design.knowledge.stamp.adoc.model.StampRecord;
+import design.knowledge.stamp.adoc.model.Status;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -174,6 +176,29 @@ public final class GitIdentityAdapter {
     public StampCoordinates coordinatesOf(StampRecord record, String component, String branch) {
         return new StampCoordinates(stamp(record.commitSha()), record.status(), record.time(),
                 author(record.author()), module(component), path(branch));
+    }
+
+    /**
+     * @param event     a commit event from the history walk
+     * @param component the repository or component the file belongs to
+     * @param branch    the branch the history was read from
+     * @return the five coordinates of that commit's STAMP: active when it changed the file, affirmed when it only affirmed
+     */
+    public StampCoordinates coordinatesOf(CommitEvent event, String component, String branch) {
+        Status status = event.touchesFile() ? Status.ACTIVE : Status.AFFIRMED;
+        return new StampCoordinates(stamp(event.commit().sha()), status, event.commit().time(),
+                author(event.commit().author()), module(component), path(branch));
+    }
+
+    /** @return the identity of a line, {@code line:<sha>:<position>} under the namespace */
+    public Identity line(design.knowledge.stamp.adoc.model.LineId id) {
+        return identity(id.key(), id.introducingSha().substring(0, 7) + ":" + id.position());
+    }
+
+    /** @return the identity of a document, keyed by component and repository-relative path */
+    public Identity document(String component, String relativePath) {
+        String path = relativePath.replace('\\', '/');
+        return identity("document:" + component + "/" + path, path);
     }
 
     private static Identity identity(String key, String name) {

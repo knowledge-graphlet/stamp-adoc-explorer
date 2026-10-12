@@ -10,6 +10,9 @@
 package design.knowledge.stamp.adoc.git;
 
 import design.knowledge.stamp.adoc.model.Affirmation;
+import design.knowledge.stamp.adoc.model.CommitEvent;
+import design.knowledge.stamp.adoc.model.LineId;
+import design.knowledge.stamp.adoc.model.StampHistory;
 import design.knowledge.stamp.adoc.model.StampFile;
 import design.knowledge.stamp.adoc.model.StampId;
 import design.knowledge.stamp.adoc.model.StampRecord;
@@ -36,6 +39,7 @@ import java.util.TreeSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -183,6 +187,74 @@ class HistoryWalkStampExtractorTest {
     }
 
     @Test
+    void eventsDescribeEachCommitWithStableLineIdentities() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        RevCommit b = commit("doc.adoc", "bob", "title", "one", "two-b", "three");        // insert above, edit the middle
+        RevCommit rita = affirm("rita", "doc.adoc", 1, 2, b);
+        RevCommit c = commit("doc.adoc", "carol", "title", "one");                       // retire the last two
+
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+
+        assertEquals(List.of(sha(a), sha(b), sha(rita), sha(c)), events.stream().map(e -> e.commit().sha().substring(0, 7)).toList());
+        CommitEvent first = events.get(0);
+        assertEquals(List.of("one", "two", "three"), first.introduced().stream().map(CommitEvent.Line::text).toList());
+        assertEquals(List.of(new LineId(a.name(), 1), new LineId(a.name(), 2), new LineId(a.name(), 3)), first.manifest());
+        CommitEvent second = events.get(1);
+        assertEquals(List.of("title", "two-b"), second.introduced().stream().map(CommitEvent.Line::text).toList());
+        assertEquals(List.of(new LineId(a.name(), 2)), second.retired(), "the edited line retires; its replacement is a new identity");
+        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1), new LineId(b.name(), 3), new LineId(a.name(), 3)), second.manifest(),
+                "unchanged lines keep the identity they were introduced under, wherever they move");
+        CommitEvent third = events.get(2);
+        assertFalse(third.touchesFile());
+        assertEquals(second.manifest(), third.manifest());
+        assertEquals(1, third.affirmations().size());
+        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1)), third.affirmations().get(0).lines());
+        assertEquals("rita", third.commit().author().name());
+        CommitEvent fourth = events.get(3);
+        assertEquals(List.of(new LineId(b.name(), 3), new LineId(a.name(), 3)), fourth.retired());
+        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1)), fourth.manifest());
+    }
+
+    @Test
+    void ignoredReflowRetextsLinesWithoutNewIdentities() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two");
+        RevCommit reflow = commit("doc.adoc", "formatter", "  one", "  two", "");
+        Files.writeString(root.resolve(".git-blame-ignore-revs"), reflow.name() + "\n");
+
+        CommitEvent event = historyOf("doc.adoc").events().get(1);
+
+        assertTrue(event.ignored());
+        assertEquals(List.of(new LineId(a.name(), 1), new LineId(a.name(), 2)), event.retexted().stream().map(CommitEvent.Line::id).toList());
+        assertEquals(List.of("  one", "  two"), event.retexted().stream().map(CommitEvent.Line::text).toList());
+        assertEquals(List.of(new LineId(reflow.name(), 3)), event.introduced().stream().map(CommitEvent.Line::id).toList(),
+                "a line an ignored commit adds beyond what it replaced is a fresh identity");
+        assertEquals(List.of(sha(a), sha(a), sha(a)), attribution("doc.adoc"), "attribution still ignores the reflow");
+    }
+
+    @Test
+    void asOfReplaysToAnEarlierCommitInItsOwnLineNumbers() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        RevCommit rita = affirm("rita", "doc.adoc", 2, 3, a);
+        RevCommit b = commit("doc.adoc", "bob", "title", "one", "two", "three");
+        git.checkout().setCreateBranch(true).setName("side").call();
+        RevCommit off = commit("doc.adoc", "sam", "elsewhere");
+        git.checkout().setName("main").call();
+
+        StampHistory history = historyOf("doc.adoc");
+
+        StampFile atA = history.asOf(a.name());
+        assertEquals(Set.of(1, 2, 3), lines(atA.stamps().get(id(a)).introduced()));
+        assertFalse(atA.stamps().containsKey(id(rita)), "the affirmation came after a");
+        StampFile atRita = history.asOf(rita.name().substring(0, 7));
+        assertEquals(Set.of(2, 3), lines(atRita.stamps().get(id(rita)).affirmed()));
+        StampFile atB = history.asOf(b.name());
+        assertEquals(Set.of(3, 4), lines(atB.stamps().get(id(rita)).affirmed()), "renumbered by the insertion above");
+        assertEquals(atB.stamps().keySet(), history.atHead().stamps().keySet());
+        assertThrows(IllegalArgumentException.class, () -> history.asOf(off.name()), "a commit off the first-parent chain");
+        assertThrows(IllegalArgumentException.class, () -> history.asOf("no-such-rev"));
+    }
+
+    @Test
     void emptyRepositoryYieldsNoStamps() throws Exception {
         Files.writeString(root.resolve("doc.adoc"), "uncommitted\n");
 
@@ -195,8 +267,12 @@ class HistoryWalkStampExtractorTest {
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private StampFile stampsOf(String file) throws IOException {
+        return historyOf(file).atHead();
+    }
+
+    private StampHistory historyOf(String file) throws IOException {
         try (GitRepo repo = GitRepo.open(root)) {
-            return repo.stampHistoryOf(Path.of(file)).atHead();
+            return repo.stampHistoryOf(Path.of(file));
         }
     }
 

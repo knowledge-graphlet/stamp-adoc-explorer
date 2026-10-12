@@ -10,6 +10,8 @@
 package design.knowledge.stamp.adoc.git;
 
 import design.knowledge.stamp.adoc.model.Affirmation;
+import design.knowledge.stamp.adoc.model.CommitEvent;
+import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.Person;
 import design.knowledge.stamp.adoc.model.StampFile;
 import design.knowledge.stamp.adoc.model.StampHistory;
@@ -108,7 +110,8 @@ final class HistoryWalkStampExtractor {
         try {
             ObjectId head = repository.resolve(Constants.HEAD);
             if (head == null) {
-                return history(relativeFile, new StampFile(relativeFile, "", Set.of(), Map.of(), List.of()));
+                StampFile empty = new StampFile(relativeFile, "", Set.of(), Map.of(), List.of());
+                return new Walked(relativeFile, empty, List.of(), Map.of(), List.of(), Set.of(), List.of());
             }
             Set<String> ignored = ignoredRevs();
             List<String> problems = new ArrayList<>();
@@ -127,28 +130,92 @@ final class HistoryWalkStampExtractor {
                 }
             }
             steps.sort((a, b) -> Integer.compare(b, a));
+            List<Step> snapshots = new ArrayList<>();
+            List<CommitEvent> events = new ArrayList<>();
             for (int index : steps) {
                 Touch t = touches.get(index);
-                if (t != null) {
-                    replay.apply(t);
-                }
+                RevCommit commit = t != null ? t.commit() : affirms.get(index).get(0).commit();
+                String pathAtCommit = t != null ? t.pathAtCommit() : replay.lastPath;
+                Replay.Delta delta = t != null ? replay.apply(t) : Replay.Delta.none();
+                List<CommitEvent.AffirmationEvent> applied = new ArrayList<>();
                 for (Affirm a : affirms.getOrDefault(index, List.of())) {
-                    applyAffirmation(replay, a, problems);
+                    List<LineId> lines = applyAffirmation(replay, a, problems);
+                    if (lines != null) {
+                        applied.add(new CommitEvent.AffirmationEvent(a.affirmation(), lines));
+                    }
                 }
+                events.add(new CommitEvent(commitOf(commit), pathAtCommit, t != null && t.ignored(),
+                        delta.introduced(), delta.retexted(), delta.retired(), List.copyOf(replay.ids), applied));
+                snapshots.add(replay.snapshot(index, commit.name()));
             }
             int headLines = lineCount(head, gitPath);
-            Map<StampId, StampRecord> stamps = replay.fold(headLines);
-            return history(relativeFile, new StampFile(relativeFile, head.name(), ignored, stamps, List.copyOf(problems)));
+            if (replay.intro.size() != headLines) {
+                throw new IllegalStateException("replayed " + replay.intro.size() + " lines but HEAD has " + headLines);
+            }
+            StampFile atHead = Replay.fold(relativeFile, head.name(), ignored, snapshots.isEmpty() ? null : snapshots.get(snapshots.size() - 1), problems);
+            return new Walked(relativeFile, atHead, snapshots, chain, problems, ignored, events);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    private static StampHistory history(Path relativeFile, StampFile atHead) {
-        return new StampHistory() {
-            @Override public Path file() { return relativeFile; }
-            @Override public StampFile atHead() { return atHead; }
-        };
+    private static CommitEvent.Commit commitOf(RevCommit commit) {
+        PersonIdent author = commit.getAuthorIdent();
+        return new CommitEvent.Commit(commit.name(), author.getWhenAsInstant(),
+                new Person(author.getName(), author.getEmailAddress()), commit.getShortMessage(), commit.getRawGpgSignature() != null);
+    }
+
+    /** One replay state as it stood after a chain step, newest last. */
+    private record Step(int chainIndex, String sha, List<StampRecord> intro, List<List<StampRecord>> affirmers, List<LineId> ids) { }
+
+    /** The walked history: snapshots per step, the chain for asOf, and the events. */
+    private final class Walked implements StampHistory {
+        private final Path relativeFile;
+        private final StampFile atHead;
+        private final List<Step> snapshots;
+        private final Map<String, Integer> chain;
+        private final List<String> problems;
+        private final Set<String> ignored;
+        private final List<CommitEvent> events;
+
+        Walked(Path relativeFile, StampFile atHead, List<Step> snapshots, Map<String, Integer> chain, List<String> problems,
+               Set<String> ignored, List<CommitEvent> events) {
+            this.relativeFile = relativeFile;
+            this.atHead = atHead;
+            this.snapshots = snapshots;
+            this.chain = chain;
+            this.problems = problems;
+            this.ignored = ignored;
+            this.events = List.copyOf(events);
+        }
+
+        @Override public Path file() { return relativeFile; }
+        @Override public StampFile atHead() { return atHead; }
+        @Override public List<CommitEvent> events() { return events; }
+
+        @Override
+        public StampFile asOf(String revision) {
+            ObjectId id;
+            try {
+                id = repository.resolve(revision);
+            } catch (IOException e) {
+                throw new IllegalArgumentException("cannot resolve " + revision + ": " + e.getMessage(), e);
+            }
+            if (id == null) {
+                throw new IllegalArgumentException("unknown revision " + revision);
+            }
+            Integer index = chain.get(id.name());
+            if (index == null) {
+                throw new IllegalArgumentException(revision + " is not on HEAD's first-parent chain");
+            }
+            Step at = null;
+            for (Step step : snapshots) {                        // oldest first; the last step at or before the revision wins
+                if (step.chainIndex() >= index) {
+                    at = step;
+                }
+            }
+            return Replay.fold(relativeFile, id.name(), ignored, at, problems);
+        }
     }
 
     // ── 1a. the chain: every first-parent commit, numbered from HEAD, with its trailers ──
@@ -162,11 +229,14 @@ final class HistoryWalkStampExtractor {
             for (RevCommit commit : walk) {
                 chain.put(commit.name(), index);
                 for (String value : commit.getFooterLines(Affirmation.TRAILER)) {
+                    Affirmation parsed;
                     try {
-                        affirms.computeIfAbsent(index, k -> new ArrayList<>()).add(new Affirm(commit, Affirmation.parse(value)));
+                        parsed = Affirmation.parse(value);        // parse before touching the map: a malformed trailer must leave no empty step
                     } catch (IllegalArgumentException e) {
                         problems.add(commit.abbreviate(7).name() + ": " + e.getMessage());
+                        continue;
                     }
+                    affirms.computeIfAbsent(index, k -> new ArrayList<>()).add(new Affirm(commit, parsed));
                 }
                 index++;
             }
@@ -214,36 +284,65 @@ final class HistoryWalkStampExtractor {
 
     // ── 2. the replay: oldest first, every line ends up naming its STAMPs ──────
 
-    /** Per-line state: who introduced the line, who has affirmed it since, and the text itself. */
+    /** Per-line state: who introduced the line, who has affirmed it since, its identity, and the text itself. */
     private final class Replay {
         private List<StampRecord> intro = new ArrayList<>();
         private List<List<StampRecord>> affirmers = new ArrayList<>();
+        private List<LineId> ids = new ArrayList<>();
         private RawText text = new RawText(new byte[0]);
+        private String lastPath = "";
         private final Map<String, StampRecord> bySha = new LinkedHashMap<>();
+
+        /** What a touch did, for the event stream. */
+        record Delta(List<CommitEvent.Line> introduced, List<CommitEvent.Line> retexted, List<LineId> retired) {
+            static Delta none() { return new Delta(List.of(), List.of(), List.of()); }
+        }
 
         /** Where a line written by an ignored commit takes its attribution from. */
         private record Source(boolean fromOld, int index) { }
 
-        void apply(Touch t) {
+        Delta apply(Touch t) {
             StampRecord stamp = bySha.computeIfAbsent(t.commit().name(),
                     sha -> record(t.commit(), t.pathAtCommit(), Status.ACTIVE));
             List<StampRecord> nextIntro = new ArrayList<>(intro.size() + 16);
             List<List<StampRecord>> nextAffirmers = new ArrayList<>(intro.size() + 16);
+            List<LineId> nextIds = new ArrayList<>(intro.size() + 16);
+            List<CommitEvent.Line> introduced = new ArrayList<>();
+            List<CommitEvent.Line> retexted = new ArrayList<>();
+            Set<LineId> survivors = new HashSet<>();
             int cursor = 0;                                      // next unconsumed line of the old version (0-based)
             for (Edit edit : t.edits()) {
                 for (int i = cursor; i < edit.getBeginA(); i++) {
-                    nextIntro.add(intro.get(i));                 // unchanged lines keep their STAMPs
+                    nextIntro.add(intro.get(i));                 // unchanged lines keep their STAMPs and identity
                     nextAffirmers.add(affirmers.get(i));
+                    nextIds.add(ids.get(i));
+                    survivors.add(ids.get(i));
                 }
                 int newCount = edit.getEndB() - edit.getBeginB();
+                int replaced = edit.getEndA() - edit.getBeginA();
                 for (int j = 0; j < newCount; j++) {
-                    if (!t.ignored()) {
-                        nextIntro.add(stamp);
-                        nextAffirmers.add(null);                 // an edited line is a new claim: unaffirmed
+                    String newText = t.text().getString(edit.getBeginB() + j);
+                    if (!t.ignored() || j >= replaced) {
+                        LineId id = new LineId(t.commit().name(), nextIds.size() + 1);
+                        if (!t.ignored()) {
+                            nextIntro.add(stamp);
+                            nextAffirmers.add(null);             // an edited line is a new claim: unaffirmed
+                        } else {
+                            Source from = inherit(intro.size(), edit, j, nextIntro.size());
+                            nextIntro.add(from.fromOld() ? intro.get(from.index()) : nextIntro.get(from.index()));
+                            nextAffirmers.add(from.fromOld() ? affirmers.get(from.index()) : nextAffirmers.get(from.index()));
+                        }
+                        nextIds.add(id);
+                        introduced.add(new CommitEvent.Line(id, newText));
                     } else {
-                        Source from = inherit(intro.size(), edit, j, nextIntro.size());
-                        nextIntro.add(from.fromOld() ? intro.get(from.index()) : nextIntro.get(from.index()));
-                        nextAffirmers.add(from.fromOld() ? affirmers.get(from.index()) : nextAffirmers.get(from.index()));
+                        int source = edit.getBeginA() + j;      // an ignored commit's replacement keeps the line's identity
+                        nextIntro.add(intro.get(source));
+                        nextAffirmers.add(affirmers.get(source));
+                        nextIds.add(ids.get(source));
+                        survivors.add(ids.get(source));
+                        if (!newText.equals(text.getString(source))) {
+                            retexted.add(new CommitEvent.Line(ids.get(source), newText));
+                        }
                     }
                 }
                 cursor = edit.getEndA();
@@ -251,24 +350,35 @@ final class HistoryWalkStampExtractor {
             for (int i = cursor; i < intro.size(); i++) {
                 nextIntro.add(intro.get(i));
                 nextAffirmers.add(affirmers.get(i));
+                nextIds.add(ids.get(i));
+                survivors.add(ids.get(i));
+            }
+            List<LineId> retired = new ArrayList<>();
+            for (LineId old : ids) {
+                if (!survivors.contains(old)) {
+                    retired.add(old);
+                }
             }
             intro = nextIntro;
             affirmers = nextAffirmers;
+            ids = nextIds;
             text = t.text();
+            lastPath = t.pathAtCommit();
+            return new Delta(introduced, retexted, retired);
         }
 
         /**
-         * Attach {@code record} to the current lines that {@code revLines}
-         * [from, to] of {@code revText} map to.
+         * Attach {@code record} to the current lines that lines [from, to] of
+         * {@code revText} map to.
          *
-         * @return how many lines received the affirmation
+         * @return the identities of the lines that received the affirmation, in order
          */
-        int affirm(StampRecord record, RawText revText, int from, int to) {
+        List<LineId> affirm(StampRecord record, RawText revText, int from, int to) {
+            List<LineId> applied = new ArrayList<>();
             if (text.size() == 0) {
-                return 0;                                        // the file is not in the chain yet
+                return applied;                                  // the file is not in the chain yet
             }
             int[] map = lineMap(revText, text);
-            int applied = 0;
             for (int line = from - 1; line <= to - 1 && line < map.length; line++) {
                 int current = map[line];
                 if (current >= 0) {
@@ -278,7 +388,7 @@ final class HistoryWalkStampExtractor {
                     if (!affirmers.get(current).contains(record)) {
                         affirmers.get(current).add(record);
                     }
-                    applied++;
+                    applied.add(ids.get(current));
                 }
             }
             return applied;
@@ -288,23 +398,35 @@ final class HistoryWalkStampExtractor {
             return bySha.computeIfAbsent(commit.name(), sha -> record(commit, path, Status.AFFIRMED));
         }
 
-        /** Fold the per-line lists into STAMP-keyed records with line bitmaps. */
-        Map<StampId, StampRecord> fold(int headLines) {
-            if (intro.size() != headLines) {
-                throw new IllegalStateException("replayed " + intro.size() + " lines but HEAD has " + headLines);
+        Step snapshot(int chainIndex, String sha) {
+            List<List<StampRecord>> affirmersCopy = new ArrayList<>(affirmers.size());
+            for (List<StampRecord> who : affirmers) {
+                affirmersCopy.add(who == null ? null : List.copyOf(who));
             }
+            return new Step(chainIndex, sha, List.copyOf(intro), affirmersCopy, List.copyOf(ids));
+        }
+
+        /** Fold one step into STAMP-keyed records with fresh line bitmaps. */
+        static StampFile fold(Path file, String revision, Set<String> ignored, Step step, List<String> problems) {
             Map<StampId, StampRecord> stamps = new LinkedHashMap<>();
-            for (int i = 0; i < intro.size(); i++) {
-                StampRecord r = intro.get(i);
-                stamps.computeIfAbsent(r.id(), id -> r).introduced().add(i + 1);      // 1-based line numbers
-                List<StampRecord> who = affirmers.get(i);
-                if (who != null) {
-                    for (StampRecord a : who) {
-                        stamps.computeIfAbsent(a.id(), id -> a).affirmed().add(i + 1);
+            if (step != null) {
+                for (int i = 0; i < step.intro().size(); i++) {
+                    StampRecord r = step.intro().get(i);
+                    stamps.computeIfAbsent(r.id(), id -> fresh(r)).introduced().add(i + 1);      // 1-based line numbers
+                    List<StampRecord> who = step.affirmers().get(i);
+                    if (who != null) {
+                        for (StampRecord a : who) {
+                            stamps.computeIfAbsent(a.id(), id -> fresh(a)).affirmed().add(i + 1);
+                        }
                     }
                 }
             }
-            return stamps;
+            return new StampFile(file, revision, ignored, stamps, List.copyOf(problems));
+        }
+
+        private static StampRecord fresh(StampRecord r) {
+            return new StampRecord(r.id(), r.commitSha(), r.status(), r.time(), r.author(), r.module(), r.summary(),
+                    new RoaringBitmap(), new RoaringBitmap(), r.signed());
         }
 
         /**
@@ -327,7 +449,8 @@ final class HistoryWalkStampExtractor {
         }
     }
 
-    private void applyAffirmation(Replay replay, Affirm a, List<String> problems) throws IOException {
+    /** @return the affirmed line identities, or null when the affirmation was not applied */
+    private List<LineId> applyAffirmation(Replay replay, Affirm a, List<String> problems) throws IOException {
         Affirmation affirmation = a.affirmation();
         String where = a.commit().abbreviate(7).name() + " " + affirmation.value();
         ObjectId rev;
@@ -335,22 +458,22 @@ final class HistoryWalkStampExtractor {
             rev = repository.resolve(affirmation.revision());
         } catch (IOException e) {
             problems.add(where + ": revision " + affirmation.revision() + " " + e.getMessage());
-            return;
+            return null;
         }
         if (rev == null) {
             problems.add(where + ": unknown revision " + affirmation.revision());
-            return;
+            return null;
         }
         RawText revText = blobAt(rev, affirmation.file().toString().replace('\\', '/'));
         if (revText == null) {
             problems.add(where + ": " + affirmation.file() + " is not committed at " + affirmation.revision());
-            return;
+            return null;
         }
         if (!affirmation.matches(lines(revText))) {
             problems.add(where + ": hash does not match the lines at " + affirmation.revision());
-            return;
+            return null;
         }
-        replay.affirm(replay.recordFor(a.commit(), affirmation.file().toString()), revText, affirmation.from(), affirmation.to());
+        return replay.affirm(replay.recordFor(a.commit(), affirmation.file().toString()), revText, affirmation.from(), affirmation.to());
     }
 
     /**
