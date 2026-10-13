@@ -1,0 +1,829 @@
+// dev-working-set-lease
+// Topic: Working-Set Leases — Single Writer Across Machines
+// Type: concept
+// Status: proposed
+:topic-id: dev-working-set-lease
+:topic-type: concept
+:topic-status: proposed
+:topic-keywords: Jini, fencing token, epoch, take, return, recall, stand-down, renewal, TTL, machine identity, sibling bundles
+:topic-scope-note: The coordination protocol that gives every openable project root \
+  in the synced development folder a single writer at a time. Sync mechanics are \
+  xref:dev-workspace-syncthing[]; sibling mechanics are xref:dev-sibling-clone-syncthing[] \
+  and xref:dev-feature-start-sibling[]. Settled by KEC 2026-08-12 in design conversation; \
+  amended by KEC 2026-08-21 (git-state materialization moves to the plugin, at the open \
+  gesture); delivered in full — every stage of `IKE-Network/ike-issues#1002` \
+  and its descendants (#1005, #1006, #1057, #1067, #1069) closed 2026-08-22. \
+  Amended by KEC 2026-10-04: the take/renew/return/recall vocabulary (#1215) and \
+  sibling history carried as bundles (#1216), released as ike-lease 7.
+
+[[dev-working-set-lease]]
+= Working-Set Leases — Single Writer Across Machines
+
+A ((working-set lease)) grants one machine at a time the right to write a
+working set — any project root under `~/ike-dev` that IntelliJ would open —
+while Syncthing carries the working tree to every machine continuously.
+The lease record lives in the synced folder itself,
+so taking a lease and announcing it are the same act:
+every peer's enforcement components observe the change within seconds.
+Enforcement is layered — an IntelliJ plugin closes and refuses projects,
+a Claude Code hook fences tool calls, and a per-machine daemon
+renews, reconciles, and garbage-collects.
+
+== The missing invariant
+
+The sibling local-origin model (`IKE-Network/ike-issues#992`) began by
+treating per-machine Git history as disposable:
+siblings chain to their local parent, the finish squashes the final tree
+into the parent's mainline, and Git state need not cross machines —
+the synced tree is the medium of exchange.
+That premise has since been revised: a sibling carried across machines
+for weeks made its commit history worth keeping, and since ike-lease 7
+that history travels too (<<dev-working-set-lease-sibling-history>>).
+What that model deliberately does not provide is intra-working-set
+coordination: two machines writing the same working set inside the
+sync window produce crossing edits, `.sync-conflict-*` files, and
+IDE unsaved-buffer clobbers.
+The standing guard is a human discipline rule —
+"one machine active at a time" —
+covering the whole folder.
+
+indexterm:[multi-machine development, single-writer]
+The lease generalizes that rule to working-set granularity and makes it
+machine-enforced. Single-writer becomes an invariant per working set;
+concurrency comes from holding *different* working sets on different
+machines, which is exactly the concurrent-siblings intent of the
+local-origin model.
+
+== Jini lineage, adapted
+
+indexterm:[multi-machine development, Jini leasing]
+The protocol borrows Jini's distributed-leasing model as actually
+specified: grants are time-bounded, never permanent; the holder renews;
+cancellation is explicit; expiry reclaims the resource without the
+holder's cooperation. Expiry-based reclamation is what dissolves the
+unreachable-peer problem — a sleeping laptop's claim ages out instead of
+wedging the fleet.
+
+indexterm:[multi-machine development, lease vocabulary]
+The vocabulary is a library loan (`IKE-Network/ike-issues#1215`,
+settled by KEC 2026-10-04): a machine *takes* a working set, *renews*
+it while working, *returns* it when done, and *recalls* one that
+another machine holds live. "Take" is the tuple-space word — Linda's
+`in` and JavaSpaces' `take` both mean gaining exclusive possession of a
+shared item — and "renew" and expiry are Jini's own. Two differences
+are deliberate. A JavaSpaces `take` blocks until a match appears; here
+a take never waits, because the TTL is a staleness horizon, not a
+queue. And a returned working set is not written back into a space:
+the record stays where it is and its state changes. The vocabulary
+replaced *acquire* and *release* because "release" already means a
+software release everywhere else in IKE; `lease.sh` still accepts the
+older verbs as aliases.
+
+Three adaptations depart from Jini, and are this design's own:
+
+Grantor-less grants::
+Jini leases are issued by a landlord — the service that owns the
+resource. Here there is none. The lease file in the synced folder *is*
+the grant, and Syncthing is the bus that publishes it.
+
+Epoch as ((fencing token))::
+Every change of holder — a take or a recall — increments a monotonic
+`epoch` counter, standard lock-service fencing practice (Chubby
+lineage, not Jini).
+Any component holding epoch _N_ that observes epoch _N+1_ with a
+different holder knows it has been fenced and stands down —
+ordering without clock trust.
+
+Single-human fleet::
+Jini assumed mutually distrustful clients. This fleet has one human;
+contention is with your own stale windows and with unattended Claude
+sessions — automatable parties that obey the fence. That is what makes
+a *recall* safe where a multi-tenant system would need consensus.
+
+indexterm:[multi-machine development, contested take]
+((Contested take)) — two machines taking the same free lease
+inside one propagation window — needs more care than the first draft of
+this topic assumed. Measured on this fleet 2026-08-12, the sync layer
+behaves in two distinct ways, and only one of them announces itself:
+
+* When the second write lands *after* the first has propagated, it
+  silently overwrites it. No conflict file appears, and the machine that
+  lost is never told.
+* When the writes are genuinely concurrent, Syncthing keeps *each*
+  machine's own file and sidelines the other as
+  `<ws>.sync-conflict-<stamp>-<device>.lease`. The two machines then hold
+  different epochs indefinitely, each convinced it is the holder.
+
+Two consequences follow, and both were observed rather than reasoned.
+An epoch cannot prevent the collision: both machines mint the *same*
+next epoch from the same starting record. And confirming a take
+by re-reading your own record is worthless, because your own record is
+precisely the one that survived.
+
+Reconciliation therefore runs on every read: fold in any conflict copies,
+take the highest epoch, break ties on the lexicographically greatest
+machine id, then delete the copies. Both machines evaluate that rule
+independently on identical inputs, so they converge without talking to
+each other, and the loser learns it has been fenced the next time it
+looks.
+
+== The lease record
+
+`~/ike-dev/leases/` holds one YAML file per working set, named for the
+working set's directory. The file persists across return and the next
+take so the epoch stays monotonic; it is garbage-collected only when the
+working set itself is gone.
+
+[source,yaml]
+----
+# leases/ike-komet-wsr.lease
+working-set: ike-komet-wsr
+state: held
+holder: Komet-MacBook-0FB8
+epoch: 17
+acquired: 2026-08-12T14:30:12Z
+renewed: 2026-08-12T15:02:44Z
+ttl: PT10M
+stamp: . main 0686b6b401f2cbacb38f2dedd853053bcc87e7be
+stamp: komet main 194b643abb98176aea7473a5e089a1e61a459fc9
+----
+
+`state` is `held` or `returned`. Cores before ike-lease 7 wrote
+`released` for a returned record; every reader since accepts both
+spellings, and a writer of this vintage writes only `returned`. A
+machine still on an older core reads `returned` as held by the
+returner until the TTL lapses — never two writers, only a recall
+dialog for a few minutes that should not have appeared — which is why
+every machine moves to a new release promptly.
+
+The `stamp:` tail (`stamp: <path> <branch> <head>`, one line per
+repository of a held working set) is the delivered form of the
+ref stamps (`IKE-Network/ike-issues#1069`): the holder refreshes them
+on renew and return, and a take or recall carries the previous
+holder's stamps forward as the alignment target. Siblings are stamped
+too since ike-lease 7, though they align to their bundles rather than
+their stamps (<<dev-working-set-lease-sibling-history>>). A record
+without stamps serializes byte-identically to the pre-stamp format, so
+readers of any vintage tolerate both shapes — pre-stamp cores simply
+drop the tail on rewrite, which the design accepts: stamps are
+best-effort metadata, never fencing state.
+
+indexterm:[multi-machine development, lease renewal]
+indexterm:[multi-machine development, staleness horizon]
+The `ttl` is a *staleness horizon*, not a wait. A recall is never
+delayed by it. It controls exactly one behavior: whether a take needs
+human confirmation.
+
+.TTL semantics
+[cols="1,2,2", options="header"]
+|===
+| Lease state | Meaning | Take behavior
+
+| Live (renewed within `ttl`)
+| Holder is presumably active
+| Recall dialog — human confirms, epoch increments
+
+| Expired or returned
+| Holder crashed, slept without work, or finished
+| Taken silently
+|===
+
+The daemon renews at half-life while the machine shows local activity
+from either source — the working set open in IntelliJ, or Claude
+recently writing to it. Default `PT10M`, renewed at five minutes —
+in force since 2026-08-12 and field-proven since.
+
+== Machine identity
+
+indexterm:[multi-machine development, machine identity]
+Holders are named by `~/.ike-machine-id`: captured **once** at setup as
+LocalHostName plus a hardware-UUID tail (`Komet-MacBook-0FB8`),
+hyphen-joined, no spaces or colons. Runtime reads only the file, never
+live system names — macOS Bonjour auto-renaming on network collisions
+would otherwise change a machine's identity mid-lease and make it fence
+itself. The hardware-UUID tail re-derives identically if the file is
+ever regenerated, unlike a MAC address (Wi-Fi private-address rotation,
+dock-resident MACs). Cross-platform seeds: `IOPlatformUUID` on macOS,
+`/etc/machine-id` on Linux, `MachineGuid` on Windows.
+
+IMPORTANT: Two live machines must never carry the same machine-id.
+Mutual self-ownership of each other's leases is the one failure the
+epoch counter cannot untangle.
+
+== Components and their contract
+
+Lease daemon (per machine)::
+A launchd agent per machine (`scripts/lease-daemon.sh` shim over
+`LeaseDaemon` in the Java protocol core, `IKE-Network/ike-issues#1067`),
+fired on every `leases/` change and on a ten-minute interval.
+Renews held leases at half-life while local activity exists; reconciles
+on wake and on sync ("I hold epoch 17, the file says 18 → direct the
+plugin to close, post a notification"); and garbage-collects records
+for deleted working sets, with a sibling's history bundles beside them. It may materialize sibling Git state
+opportunistically — siblings need no credentials — but materialization
+is primarily the plugin's job (amended 2026-08-21;
+<<dev-working-set-lease-materialization>>): the daemon is headless, the
+password-manager agent holds no identities for it, and the fleet key
+speaks to peers, not GitHub.
+
+IntelliJ plugin (Java)::
+The OS-neutral enforcement arm. Opening a project is the take: free or
+expired → taken silently; live elsewhere → recall dialog. Closing it
+is the return, which for a sibling also writes its history bundles. On observing itself fenced: save all documents, close the
+project, post a balloon. It also *renews* — a project sitting open with
+nobody typing is still being worked on, and its lease has to say so.
+Omitting that was the one real defect the first cross-machine run
+exposed: an open project let its ten-minute lease lapse and the other
+machine claimed it silently, because an expired lease needs no
+permission. Renewal is the holder's job in this model, so the watcher
+sweeps every minute and re-asserts each open project's lease through the
+same call that detects fencing — one code path, so the two cannot drift.
++
+It is also the primary materializer of machine-local Git state: the
+open gesture is where a bare tree is discovered, the agent is alive,
+and the human is present — see
+<<dev-working-set-lease-materialization>>.
++
+Built with Maven, not Gradle. The platform toolchain is Gradle-centric,
+but what that buys — SDK download, a sandbox IDE, the Marketplace
+verifier, signing — is ceremony a never-published plugin does not need,
+and a plugin distribution is a zip with a jar under `lib/`. The SDK comes
+from the installed IDE's own jars, because the published Maven artifacts
+are a much thinner slice (no `Project`, no `Disposable`, no
+`StartupActivity`) and the repository serves no listing to enumerate the
+right ones.
+
+Claude Code hook::
+A PreToolUse hook resolves any touched path to its working-set root and
+blocks Edit/Write/Bash when the lease is held elsewhere, naming the
+holder and epoch. Free leases are taken on first write; recalling a
+live lease requires the human's confirmation in conversation — the same
+one rule as the IDE dialog. A SessionStart hook surfaces current
+holdings so sessions start lease-literate.
++
+It also refuses writes into *another machine's* `ike-dev` — `scp`,
+`rsync`, or a write verb over `ssh` — for the reason in
+<<dev-working-set-lease-onboarding>>. Worth being clear about its limits:
+it evaluates local paths, so remote writes were invisible until that rule
+existed; `ike-dev`'s own infrastructure is deliberately unleasable and so
+unprotected; and it binds only the assistant. It is a guardrail on one
+writer, not a general safety property.
+
+SSH::
+Demoted from mechanism to fast path. Correctness never depends on
+reachability; SSH verifies that a peer reacted and gates the handoff on
+Syncthing's REST completion status. The detection recipe for staged
+delivery (below) also rides SSH.
++
+It needs a dedicated on-disk key per machine. A password-manager agent
+holds *no identities* in a non-interactive session, so anything headless —
+the peer probe, and later the daemon — cannot authenticate through it.
+Name that key anything but `id_ed25519` on such a machine: there
+`id_ed25519.pub` is the agent key's public half referenced by
+`IdentityFile`, and generating over it silently breaks every host that
+trusts the agent key, GitHub included.
+
+== Recall, end to end
+
+indexterm:[multi-machine development, recall]
+A recall with both machines awake:
+
+. The human opens the working set on the recalling machine; the plugin
+  shows the holder and last renewal; the human confirms.
+. The plugin writes `epoch: 18, holder: <this machine>`. Ownership
+  transfers at this instant, and the writer immediately asks Syncthing to
+  scan `leases/` rather than waiting to be noticed — measured 2026-08-12,
+  a lease written on one machine did not reach the other at all until a
+  scan was forced, leaving the hourly rescan as the fallback. A bus with
+  an hour of latency is not a bus. With the forced scan the record lands
+  in about five seconds on the LAN.
+. The losing machine's plugin observes the bump: saves all documents,
+  closes the project, writes an ack, posts a notification. Its Claude
+  sessions hit the fence at their next tool call; its daemon stops
+  renewing.
+. The flushed saves and ack sync back; the recalling plugin holds a brief
+  "waiting for flush" state, then opens the editor.
+
+indexterm:[multi-machine development, silent peer]
+Silent peer (asleep, lid closed, off network): skip the wait — proceed
+immediately on what is already synced, which is everything up to the
+moment the peer went offline. Its stand-down runs late instead of never:
+the daemon reconciles on wake before stale windows can write. Exposure
+is bounded to buffers unsaved at sleep (small, given save-on-deactivation),
+surfaces as detectable conflict files, and is backstopped by staggered
+versioning.
+
+== Git-state materialization at the open gesture
+[[dev-working-set-lease-materialization]]
+
+indexterm:[multi-machine development, git-state materialization]
+`.git` never syncs, so a working set arrives on another machine as a
+tree with no repository. The first assignment of this job — the daemon,
+at the take — was amended 2026-08-21, defeated by a constraint this
+design had already recorded: the daemon is headless, the
+password-manager agent holds no identities for a non-interactive
+session, and the fleet key authenticates to peers, not GitHub. On a
+machine whose GitHub identity lives only in the agent, the daemon
+cannot clone a GitHub-rooted working set at all. The IDE session can —
+the agent is alive there, and the human is present for anything that
+needs deciding. So the plugin materializes, at the open gesture, after
+the confirmed take succeeds — both kinds:
+
+GitHub-rooted roots::
+From the synced origin *manifest* — data, never executable scripts
+arriving by sync. Naming convention covers most repositories but not
+all, so the manifest is genuinely needed.
+
+Siblings::
+Wired to their *local* parent, never a remote remote: per member,
+`origin` is the parent member path and the branch is the `꞉` suffix,
+rooted at the parent's mainline — the same derivation
+`ws:feature-start-sibling` uses at creation
+(`IKE-Network/ike-issues#992`). Parent before sibling: a sibling can
+only fetch from a parent that has Git state, so a bare parent
+materializes first — an ordering only the take surface can
+naturally enforce. A freshly materialized sibling starts at the
+parent's mainline; its feature history then arrives from the last
+holder's bundles (<<dev-working-set-lease-sibling-history>>).
+
+The mechanics are the same in every case: in-place `git init`, fetch,
+move refs, `git reset --mixed` — never `git clone`. Clone refuses a
+non-empty directory, a temporary clone inside the synced folder would
+itself be scanned, and the working tree is authoritative: metadata is
+brought *to* the synced tree, never the tree to the metadata. Every
+repo-creation site inherits the fsmonitor guard
+(`IKE-Network/ike-issues#1052`).
+
+indexterm:[multi-machine development, ref alignment]
+Materialization's sibling operation is *ref alignment*: a taker whose
+repository exists but whose HEAD is stale sees the synced tree as a
+phantom mega-diff, and `git pull` fights it — the merge refuses to
+overwrite exactly the files sync already updated. The holder therefore
+stamps `stamp: <path> <branch> <head>` lines per repository into the
+lease record on the writes the protocol already makes (renew at
+half-life, return — collected by pure file reads, so stamping rides
+even the fence's hot path), and the taker aligns on the take with
+the same primitive: fetch, move the branch ref and HEAD
+(`update-ref` + `symbolic-ref`, never `branch -f`), `reset --mixed`,
+tree untouched. When the stamp is behind origin's branch tip, the tip
+wins; a stamp whose commit was never pushed falls back to the tip with
+the unpushed history *reported, never chased* — and local-only
+divergence *refuses* the move rather than orphaning commits: every
+decision point defaults to refuse-and-report. Delivered and
+field-proven cross-machine as `IKE-Network/ike-issues#1069` (split
+from #1057's acceptance). A sibling's stamps name commits that exist
+only on the stamping machine — its origin is the local parent — so a
+sibling aligns to its bundles instead, below.
+
+[[dev-working-set-lease-sibling-history]]
+indexterm:[multi-machine development, sibling history bundles]
+A sibling's committed history travels as *git bundles* through the
+sync layer (`IKE-Network/ike-issues#1216`, settled by KEC 2026-10-04).
+`.git` never syncs and the local parent never sees a sibling's
+commits, so without help a commit made on one machine exists nowhere
+another machine can fetch it from — on 2026-10-04 each machine held
+commits of `ike-komet-wsr꞉64bit` the other lacked, and both had to be
+realigned by hand. The holder therefore writes, per member repository,
+a bundle of the feature branch's commits beyond its local `main` to
+`leases/<working-set>.bundles/`: on every return, and on a renew when
+a head has moved — the second matters because the Claude fence takes
+silently and lets leases expire rather than returning them. Bundles
+are ordinary files, carried like the record beside them, with no SSH
+and no need for the writing machine to be on.
+
+A bundle names its own head, so it is its own alignment target. At the
+open gesture (or through `MaterializeCli`) the taker fetches each
+bundle's head into a side ref and, when its own branch is an ancestor
+of it, moves the branch there and runs `reset --mixed` — the same
+tree-untouched primitive as root alignment. Local-only commits refuse
+the move; a bundle that builds on parent commits not yet fetched
+fetches the local parent first and refuses only if they are still
+missing. A tree that still differs from the bundle's head afterwards is
+not an error: it is uncommitted work the sync layer carried, or sync
+still arriving, and it reads as the ordinary status delta.
+
+*A bundle only moves forward.* A member's bundle is replaced only when
+the writing machine's branch already contains the existing bundle's
+head. A machine that took a sibling but has not yet aligned would
+otherwise overwrite the previous holder's history with its own stale
+branch — or, with nothing beyond `main`, delete it. Bundles are small:
+thirty commits of `tinkar-core` history make a 120 KB bundle written in
+0.03 seconds. `ws:sibling-remove-publish` deletes them with the lease
+record, and the daemon's record GC does the same.
+
+indexterm:[multi-machine development, local-remote invariant]
+The local-remote invariant is machine-enforced, not conventional. On
+every sibling open the plugin verifies `origin` is a local path and
+repairs or warns — which is also how legacy GitHub-origin siblings get
+migrated. A pre-push guard in the IDE refuses any push from a sibling
+to a non-local remote, and the Claude fence mirrors the rule — the
+same one-rule-on-both-surfaces pattern as recall. What this buys is
+concrete: a sibling becomes *finishable from any machine*, because the
+finish presupposes exactly this wiring on the machine running it.
+
+Implemented once, as one Java core with two thin hosts — settled the
+same day the script framing was first written, and superseding it.
+Bash is native nowhere a Windows port would land; the JVM and
+git-the-executable are portable everywhere the fleet could go, and
+inside the IDE the right way to run authenticated git is git4idea's
+own command machinery, not a shell spawned beside it. The core is
+IntelliJ-free and holds everything decision-shaped — classification,
+ordering, derivation, manifest lookup, the git sequence, the guard,
+the invariant checks — while each host contributes exactly a git
+runner, an interaction surface, and a trigger. The IDE adapter runs
+at the open gesture with git4idea's credentials, progress, and
+cancellation, and owns the dialogs; a headless `main()` on the same
+jar serves the daemon, the operator, and Claude sessions through
+plain `git`, refusing and reporting wherever a human would have been
+asked. Maven goals are deliberately neither host: materialization
+runs exactly when a working set is least functional, and the lease
+layer sits below the build system — goals meet leases as clients,
+never hosts (`IKE-Network/ike-issues#1005`). The lease *protocol*
+followed the same road on 2026-08-22: the port into the Java core
+(`network.ike.lease.core.LeaseProtocol`) landed dark behind a
+28-scenario equivalence suite running core and the frozen shell v2
+against identical fixtures, then flipped in one cut — `lease.sh` is
+now a thin wrapper that execs the CLI, every caller unchanged at the
+seam, the record bytes the contract throughout, so migrated and
+unmigrated machines interoperated mid-rollout
+(`IKE-Network/ike-issues#1067`; released as `ike-lease`).
+Materialization delivered under `IKE-Network/ike-issues#1057`,
+field-proven cross-machine the same day.
+
+== What this supersedes
+
+indexterm:[multi-machine development, retired bootstrap]
+The lease system replaces the git-hook bootstrap apparatus, whose job —
+materializing machine-local Git state for synced trees — moves to the
+take surfaces at a better trigger point, primarily the plugin at
+the open gesture (<<dev-working-set-lease-materialization>>), with
+better inputs (derivable sibling origins; a data manifest for the
+rest).
+Retired: the `post-checkout`/`post-merge` `_git-init.sh` generator and
+its per-repo script litter, the watcher's execute-synced-scripts
+payload, the never-activated VCS Bridge trio (parked in `staged/` and
+non-executable in place), the associated setup scripts, the
+`~/.gitignore_global` entries, and the bootstrap sections of
+`~/ike-dev/CLAUDE.md`. Kept: the two commit-message generator hooks
+(`prepare-commit-msg`, `commit-msg`), which are unrelated to sync.
+The `ike:setup` footgun was neutralized in `ike-tooling` by deleting
+SetupMojo and the bridge-hook resources outright. The
+clone-on-the-second-machine interim was retired 2026-08-22 when the
+materializer field-passed: git state now arrives at the open gesture
+(or via `MaterializeCli` headlessly), and cloning into a synced tree
+is exactly the gesture the design forbids.
+
+== What a lease cannot see
+
+indexterm:[multi-machine development, non-participant]
+A lease is a *claim*, and only participants make claims. A machine whose
+plugin is not loaded opens a project, never consults the record, and is
+structurally invisible to every other machine — the lease will report one
+tidy holder while two IDEs edit the same tree. That is not a gap in the
+implementation; a claim-based protocol cannot detect something that never
+claims.
+
+This is why the SSH probe from the first stage is not superseded
+legacy. The two mechanisms answer different questions:
+
+[cols="1,2", options="header"]
+|===
+| Mechanism | Question it answers
+
+| The lease record
+| Who claims the right to write? An assertion, made only by participants,
+  and cheap — a file read, no network.
+
+| The open-project probe
+| Which IDEs actually hold this project open? Ground truth about live
+  processes, including machines that are not participating at all.
+|===
+
+The lease is the control; the probe is the monitor for that control.
+Observed 2026-08-13: with a third machine present but its plugin not yet
+loaded, the record named a single holder while the probe correctly
+reported the working set open in two places. Once every machine
+participates the two agree, and any disagreement becomes a useful alarm —
+*someone is writing without a lease*. So the probe belongs on a periodic
+or on-demand consistency check, not on the hot path; routine "may I work
+here?" questions should read the lease, which needs no reachable peer.
+
+== What the sync layer actually guarantees
+
+indexterm:[multi-machine development, propagation window]
+The design rests on the lease record being both record and bus, so what
+that layer really does is load-bearing, and three of its properties were
+established by measurement rather than assumption:
+
+Delivery is not automatic::
+The filesystem watcher did not pick up writes into `leases/`; without
+intervention the fallback was the hourly rescan. Every write now forces
+a targeted scan of that one directory through Syncthing's local REST
+API, which brings delivery to roughly five seconds each way. This must
+be synchronous — backgrounding the request loses it whenever the writing
+process exits immediately after, which is exactly what a peer running
+the lease command over SSH does.
+
+The propagation window is wide enough to matter::
+Ten seconds of watcher delay alone, before transfer. Any protocol step
+that assumes a peer has already seen a write is wrong on this fleet.
+
+Concurrent writes do not merge::
+See the contested-take rules above. Reconciliation is a normal
+part of reading a lease, not an exceptional path.
+
+The sync layer has exactly one writer per machine::
+Itself. Placing a file in the folder behind its back — by `scp`, by a
+command over `ssh`, by any route other than the sync layer or the machine
+that owns the file — leaves its index disagreeing with the disk. It then
+refuses to overwrite what it did not place, reporting *"file modified but
+not rescanned"* and retrying indefinitely. Thirteen files wedged that way
+on 2026-08-13, a lease record among them, and two machines each went on
+believing they held the same working set. Sync delivers a local edit to
+every peer in about five seconds; there is never a reason to reach across.
+
+Ignoring a path is not retroactive::
+Ignore rules apply to what a machine scans *after* they exist. A machine
+that indexes a path before its rules arrive has announced those files to
+the cluster, and they behave as ordinary content from then on. This is the
+onboarding hazard in <<dev-working-set-lease-onboarding>>, and it is how a
+local cleanup became fleet-wide deletion.
+
+== Onboarding a machine, and why order matters
+[[dev-working-set-lease-onboarding]]
+
+indexterm:[multi-machine development, onboarding]
+Enforcement is machine-local by nature — identity, the Claude hooks
+(`~/.claude/settings.json` never syncs), the IDE plugin (the released
+zip from Nexus, installed into the running IntelliJ version's config
+folder) — so joining a fleet is not something sync can do for you.
+`scripts/setup-machine.sh` performs those steps and is idempotent, so it
+doubles as a health check; run on an existing machine it found one that
+had been enforcing leases through the IDE alone, with no Claude fence
+wired at all. Re-running it is also how a machine upgrades after each
+`ike-lease` release.
+
+Two orderings are load-bearing, and getting them wrong is expensive:
+
+*Ignore rules must arrive before the first scan.* A `.stignore` of
+`#include stignore-shared` is inert until that file syncs, so a new
+machine's first scan sees no rules and indexes everything — on
+2026-08-13 that meant 63,611 files instead of 42,684, `.git` and `target`
+included. Deliver `stignore-shared` directly before the folder starts
+pulling. The wrong-looking peer-completion percentages that follow (99% on
+one machine, 79% on another) are a symptom of the same thing: the peers
+genuinely lack the files only the new machine wrongly counted.
+
+*Never selectively delete `.git` inside the synced folder.* Removing a
+whole working set is supported and expected; surgically removing
+repositories from underneath one is not, and no workflow needs it. Doing
+so after a machine had indexed those files destroyed the repositories on
+every machine. Note that `(?d)` is *not* the culprit, despite appearances:
+Syncthing documents it as unblocking directory removal, not as a general
+deletion permit, and removing it would only cost you one-step working-set
+deletion. The rule to keep is the operational one above.
+
+== Safety nets, and what each actually covers
+
+indexterm:[multi-machine development, safety net]
+Three layers sit under this design, and they cover different things —
+knowing which is which matters at the moment something is missing.
+
+[cols="1,2", options="header"]
+|===
+| Layer | Covers
+
+| Remotes
+| Anything committed and pushed. After the 2026-08-13 loss every
+  repository was recoverable from origin, because all were at HEAD with
+  nothing ahead.
+
+| Sync file versioning (staggered, 20 days)
+| Files the sync layer itself replaces or deletes — i.e. changes arriving
+  from another machine. *Not* your own local edits, and *not* ignored
+  paths, so it does not cover `.git` or build output.
+
+| Filesystem snapshots
+| Everything on disk, ignored paths included. This is the only layer that
+  holds local-only branches, and stashes.
+|===
+
+That last row is the one to remember. Two things live *only* in a local
+repository: branches never pushed — which the sibling model deliberately
+creates — and stashes, which no upstream comparison will ever reveal.
+`git rev-list @{u}..HEAD` reports zero while three stashes sit
+unmentioned. Snapshots recovered both after the incident; nothing else
+could have.
+
+== Staged delivery
+
+. *Detect and refuse* — shipped 2026-08-12. A recall checks peers over
+  SSH for the working set held open; the reliable signal is file handles
+  held under the IDE's per-project cache (`projects/<name>.<hash>/` in
+  the JetBrains system directory) — match the directory, not a specific
+  file. A peer that is *unreachable* and one that is *failing* are
+  different conditions: the first is genuinely off, so its tree is synced
+  up to the moment it slept and nothing can be editing it; the second may
+  have the working set open right now, and is refused.
+. *Lease record, Claude fence, and IntelliJ plugin* — shipped
+  2026-08-12/13 and running on the fleet. the protocol is implemented
+  once for every enforcement point — since the #1067 flip, in the Java
+  core (`network.ike.lease.core.LeaseProtocol`), with `scripts/lease.sh`
+  as the wrapper that execs it; the `PreToolUse` hook
+  denies writes to a working set leased elsewhere and the `SessionStart`
+  hook states the rules and holdings; the plugin makes opening a project
+  the take and closes a project when fenced. `ike-dev`'s
+  own infrastructure directories (`leases/`, `scripts/`, `notes/`) are not
+  working sets and cannot be leased. An IDE-to-IDE recall is verified in
+  both directions: the losing machine saved, notified, and closed within
+  five seconds of the record arriving. Three machines participate, and the
+  protocol needed nothing to accommodate the third — adding one changes a
+  single synced line in `peers.conf`.
+. *Wake-time reconciliation* in the daemon — delivered 2026-08-22
+  (`IKE-Network/ike-issues#1006`): a one-shot pass on every `leases/`
+  change and a ten-minute interval, on all three machines. Recalls that
+  fence this machine notify the human promptly; records for vanished working
+  sets are collected (never ones whose tree may still be syncing —
+  records travel faster than trees); the non-participant alarm rides
+  the probe, notify-never-block. Renewal and stand-down stayed where
+  they already lived — the IDE watcher and the fence — and the silent
+  peer's remaining exposure is exactly the notification gap this
+  closes.
+. *(Optional) Sync-layer fencing.* Per-working-set Syncthing folders
+  flipped to receive-only on non-holders — enforces single-writer
+  against every local writer including terminals, at real operational
+  cost. Adopt only if stray-writer incidents occur in practice.
+
+== Settled decisions and open items
+
+Settled (KEC, 2026-08-12):
+
+* Forced takeover with fencing, immediately — no expiry wait, ever.
+* TTL is a staleness horizon only; it selects confirm-dialog versus
+  silent auto-acquire.
+* Auto-acquire on open when free; takeover of a live lease is always a
+  human decision, on either surface (IDE dialog or Claude conversation).
+* Scope: every openable project root under `~/ike-dev`, including
+  short-hold parent leases during finish and push operations.
+  Workspace-nested subprojects lease at workspace granularity.
+* Machine identity: LocalHostName + hardware-UUID tail, captured once
+  in `~/.ike-machine-id`.
+* Git hooks: keep the two commit-message generators; retire the
+  bootstrap and bridge apparatus per the supersession list above.
+
+Settled (KEC, 2026-08-13):
+
+* Every machine carries a dedicated on-disk fleet key for
+  machine-to-machine SSH, never the password-manager agent's.
+* Derived state is excluded from sync at the source rather than cleaned
+  up afterwards: IDE project files regenerated on Maven import, unpacked
+  build standards, goal receipts, `.ike/vcs-state`, logs, and the
+  per-checkout Develocity id.
+* `(?d).git/` stays as it is. The rule that replaces it is operational —
+  never selectively delete `.git` inside the synced folder.
+* Staggered file versioning, 20 days.
+
+Settled (KEC, 2026-08-21):
+
+* Materialization is plugin-first, at the open gesture, after the
+  confirmed acquisition; the daemon keeps wake-time reconciliation,
+  garbage collection, and the non-participant alarm, and may
+  materialize siblings opportunistically. The deciding constraint is
+  credential reality: headless, the daemon has no GitHub identity; the
+  IDE session does.
+* Parent before sibling, and siblings wire to their local parent —
+  never a remote remote. The invariant is machine-enforced: open-time
+  verify-and-repair, an IDE pre-push refusal, and the fence's mirror
+  rule.
+* In-place init + fetch + reset, never clone; the synced tree is
+  authoritative; every repo-creation site inherits the fsmonitor guard
+  (`IKE-Network/ike-issues#1052`).
+* Root working sets stamp branch and head into the lease record at
+  renew and release; the taker aligns refs to the tree, and unpushed
+  divergence is surfaced, never chased. Siblings stamp nothing.
+* One Java core, two thin hosts (`IKE-Network/ike-issues#1057`): an
+  IntelliJ-free core holds all decision logic; the IDE adapter and a
+  headless CLI `main()` on the same jar each add only a git runner, an
+  interaction surface, and a trigger. Maven goals are clients of the
+  lease layer, never hosts of it. The core's durable home is the
+  plugin repository (`IKE-Network/ike-issues#1007`), decoupling this
+  work from the scripts-repo decision (`IKE-Network/ike-issues#1008`).
+* The protocol itself follows: it migrates into the Java core and
+  `lease.sh` thins to a wrapper (`IKE-Network/ike-issues#1067`). The
+  single-implementation rule survives with the core as canonical; the
+  flip is one cut behind equivalence tests; the on-disk record is the
+  unchanged contract, so the fleet migrates one machine at a time. The
+  daemon lands in Java as the core's resident host.
+* The origin manifest lives beside `peers.conf`, as
+  `scripts/origins.conf`: one line per GitHub-rooted repository,
+  `<path-relative-to-ike-dev> <canonical https URL>`. Path keying names
+  a workspace's nested members with the same syntax as single-repo
+  roots; canonical URLs stay machine-neutral because each machine's own
+  `insteadOf` rules route them to its SSH configuration. Siblings never
+  appear — their origins are derived, not declared.
+
+Settled (KEC, 2026-08-22):
+
+* The `.git` ignore drops its trailing slash: `(?d).git`, not
+  `(?d).git/`. Measured, the old form excluded the *contents* but
+  indexed and synced the directory *entry* itself, so every peer held an
+  empty `.git` husk — and a husk entry's deletion propagated, which with
+  `(?d)` is the likeliest mechanism of the fleet-wide loss this topic
+  recorded as unexplained. The bare pattern expands to cover the entry
+  (`.git`, `**/.git`) as well as the contents; verified loaded on all
+  three machines after Syncthing restarts, and probe-proven end to end —
+  a fresh directory with a `.git` inside synced to both peers without
+  it. Existing on-disk husks are inert local junk that the husk-aware
+  detection reads as bare.
+* Settled the same day, same procedure: every remaining trailing-slash
+  directory ignore drops its slash — `target`, `.idea/shelf`,
+  `.idea/httpRequests`, `.claude/standards`, `logs`, `.mvn/.develocity`,
+  `out`, `.gradle`, `build` (nine in all). Checked before the change: no
+  synced file shares any of those names, so the bare patterns shadow
+  nothing. Verified loaded on all three machines and probe-proven
+  (a directory carrying `target/`, `build/` and `logs/` synced marker-only
+  to both peers). The file now carries the rule in its own header:
+  directory ignores take no trailing slash.
+
+Settled (KEC, 2026-10-04):
+
+* The lease verbs are *take*, *renew*, *return* and *recall*
+  (`IKE-Network/ike-issues#1215`), so "release" keeps its software
+  meaning. They supersede "acquire", "release" and "forced takeover" in
+  the earlier settled items above, which keep their original wording as
+  the record of what was settled then. The CLI keeps the old verbs as
+  aliases; the record writes `returned` and reads `released` too.
+* Sibling history is no longer disposable: it travels as git bundles
+  in `leases/<working-set>.bundles/`, and siblings are stamped. This
+  supersedes "Siblings stamp nothing" (2026-08-21) and the disposability
+  premise of the local-origin model (`IKE-Network/ike-issues#1216`).
+* A release of `ike-lease` runs through TeamCity
+  ("ike-lease release publish") or locally with the same
+  `ike:release-publish`; machines upgrade by re-running
+  `scripts/setup-machine.sh`, which installs the released plugin. The
+  lease wrappers run the installed release, never a local build unless
+  `IKE_LEASE_JAR` names one.
+
+Resolved since (each was open when first written):
+
+* Confirmed acquisition *is* the default for consequential steps —
+  IDE open and `ws:` finish/release — with the optimistic path kept
+  for the per-tool-call fence (`IKE-Network/ike-issues#1005`,
+  delivered).
+* The fence's latency budget resolved by measurement, not by the
+  socket: direct exec of the ported protocol costs ~60 ms wall against
+  ~30 ms for the pure shell, which disappears into any tool call. The
+  resident-daemon socket stays unbuilt; fail-open (exit 127) covers
+  the jar-missing case (`IKE-Network/ike-issues#1067`).
+* The non-participant alarm shipped in the daemon: it rides the
+  working-set-check probe, rate-limited, notify-never-block — probe
+  *errors* are logged, not alarmed, so flaky headless SSH cannot cry
+  wolf (`IKE-Network/ike-issues#1006`).
+
+Open:
+
+* Windows/Linux ports: daemon host per OS (systemd, Task Scheduler);
+  the `꞉` separator is NTFS-legal; review `.gitattributes` line-ending
+  discipline before a non-Mac machine joins. The protocol core is
+  portable by construction; only the hosts are per-OS.
+* One incident remains unexplained: deleting `.git` on a machine that had
+  indexed those files pre-ignore removed them fleet-wide, and the
+  documented `(?d)` semantics do not account for it. The operational rule
+  stands regardless, but the mechanism is unproven.
+
+Implementation was tracked in `IKE-Network/ike-issues#1002`, closed
+2026-08-22 with every stage delivered; the descendants (#1005 confirmed
+take, #1006 daemon, #1057 materialization, #1067 protocol port,
+#1069 ref alignment) closed the same day. The vocabulary (#1215) and
+sibling bundles (#1216) shipped in `ike-lease` 7 on 2026-10-04. The
+machinery ships as the released `ike-lease` reactor
+(`IKE-Network/ike-lease-plugin`).
+
+== Change Log
+
+[cols="1,4", options="header"]
+|===
+| Date | Change
+
+| 2026-08-12
+| Design settled by KEC; v1 detect-and-refuse and v2
+  record/fence/plugin shipped.
+
+| 2026-08-21
+| Amended by KEC: git-state materialization moves to the plugin at the
+  open gesture (#1057); one Java core, two thin hosts; protocol port
+  settled (#1067).
+
+| 2026-08-22
+| Delivered in full and statuses reconciled: protocol port flipped
+  (`lease.sh` = wrapper), daemon live fleet-wide, ref alignment
+  (#1069) delivered with the `stamp:` record tail, confirmed
+  acquisition default recorded, open items resolved, retired
+  clone-interim guidance removed.
+
+| 2026-10-04
+| Amended by KEC: take/renew/return/recall vocabulary (#1215); sibling
+  history carried as git bundles, siblings stamped, a bundle only moves
+  forward (#1216); state `returned`, `released` still read. Released
+  as `ike-lease` 7.
+|===

@@ -13,4 +13,5 @@ module stamp.adoc.core {
     exports design.knowledge.stamp.adoc.git;
     exports design.knowledge.stamp.adoc.identity;
     exports design.knowledge.stamp.adoc.cli;
+    exports design.knowledge.stamp.adoc.dialect;
 }
