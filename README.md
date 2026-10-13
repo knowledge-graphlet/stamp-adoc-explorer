@@ -6,12 +6,11 @@ Time, Author, Module and Path coordinates a Tinkar version carries.
 
 | Module | What it is |
 |--------|------------|
-| `core` | The engine: a first-parent history walk over JGit with rename following and `.git-blame-ignore-revs` honored, the `Affirms` trailer format, and a headless `Cli`. Java 21, no UI dependencies. |
-| `fx`   | JavaFX RichTextArea visualization (Java 25, preview features). |
+| `core` | The engine: a first-parent history walk over JGit with rename following and `.git-blame-ignore-revs` honored, the `Affirms` trailer format, the IKE-dialect AsciiDoc parser (`dialect`), the identity adapter, and a headless `Cli`. Java 21, no UI dependencies; consumed by the IntelliJ plugin here and by the Komet plugin (`komet-claude-plugin`). |
 | `idea` | IntelliJ plugin: *Annotate with STAMPs* (gutter) and *Affirm Selected Lines…* (empty signed commit with `Affirms:` trailers). Packaged as `idea/target/stamp-adoc-idea-<version>.zip`. |
 
 ```bash
-./mvnw clean package                     # build everything, run the engine tests, package the plugin zip
+./mvnw clean package                     # build the engine and the plugin, run the engine tests, package the plugin zip
 java -cp core/target/classes:$(./mvnw -q -f core dependency:build-classpath -Dmdep.outputFile=/dev/stdout) \
      design.knowledge.stamp.adoc.cli.Cli <repo-root> <file>      # headless view of one file's STAMPs
 ```
