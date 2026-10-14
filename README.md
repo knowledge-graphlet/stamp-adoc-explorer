@@ -6,8 +6,8 @@ Time, Author, Module and Path coordinates a Tinkar version carries.
 
 | Module | What it is |
 |--------|------------|
-| `core` | The engine: a first-parent history walk over JGit with rename following and `.git-blame-ignore-revs` honored, the `Affirms` trailer format, the IKE-dialect AsciiDoc parser (`dialect`), the identity adapter, and a headless `Cli`. Java 21, no UI dependencies; consumed by the IntelliJ plugin here and by the Komet plugin (`komet-claude-plugin`). |
-| `idea` | IntelliJ plugin: *Annotate with STAMPs* (gutter) and *Affirm Selected Lines…* (empty signed commit with `Affirms:` trailers). Packaged as `idea/target/stamp-adoc-idea-<version>.zip`. |
+| `core` | The engine: a first-parent history walk over JGit with rename following and `.git-blame-ignore-revs` honored, the `Annotation:` trailer format (affirm, refute, comment; kinds as `k:uuid=` Koncept references) and signature-evidence classification, the IKE-dialect AsciiDoc parser (`dialect`), the identity adapter, and a headless `Cli`. Java 21, no UI dependencies; consumed by the IntelliJ plugin here and by the Komet plugin (`komet-claude-plugin`). |
+| `idea` | IntelliJ plugin: *Annotate with STAMPs* (gutter) and *Affirm*, *Refute* and *Comment on Selected Lines…* (empty commit, signed by default, with `Annotation:` trailers). Packaged as `idea/target/stamp-adoc-idea-<version>.zip`. |
 
 ```bash
 ./mvnw clean package                     # build the engine and the plugin, run the engine tests, package the plugin zip

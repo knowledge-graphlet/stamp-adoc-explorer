@@ -17,17 +17,20 @@ import java.time.Instant;
 /**
  * One STAMP of a file: a commit, read as the Status, Time, Author, Module
  * and Path coordinates, with the current-snapshot lines it holds under each
- * line role.
+ * line role: introduced, or annotated as affirmed, refuted or commented on.
  *
  * @param id         the STAMP identity (the commit SHA for now)
  * @param commitSha  the full commit SHA
- * @param status     {@link Status#ACTIVE} when the commit introduced lines, {@link Status#AFFIRMED} when it only affirmed them
+ * @param status     the STAMP's status, {@link Status#ACTIVE} for every commit
  * @param time       the author time of the commit
  * @param author     the commit author
  * @param module     the path the file had when the commit was made
  * @param summary    the commit subject, for hover text
  * @param introduced 1-based current lines this commit introduced
- * @param affirmed   1-based current lines this commit affirmed through {@code Affirms:} trailers
+ * @param affirmed   1-based current lines this commit affirmed through {@code Annotation:} trailers,
+ *                   and that its author has not since refuted
+ * @param refuted    1-based current lines this commit refuted, and that its author has not since affirmed
+ * @param commented  1-based current lines this commit commented on
  * @param signed     whether the commit carries a signature (presence, not yet verification)
  */
 public record StampRecord(
@@ -40,5 +43,7 @@ public record StampRecord(
         String summary,
         RoaringBitmap introduced,
         RoaringBitmap affirmed,
+        RoaringBitmap refuted,
+        RoaringBitmap commented,
         boolean signed
 ) { }

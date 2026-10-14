@@ -42,7 +42,7 @@ public interface StampHistory {
     StampFile asOf(String revision);
 
     /**
-     * @return one event per first-parent commit that changed or affirmed
+     * @return one event per first-parent commit that changed or annotated
      *         the file, oldest first
      */
     List<CommitEvent> events();

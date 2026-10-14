@@ -14,12 +14,16 @@ import com.intellij.openapi.localVcs.UpToDateLineNumberProvider;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.InputValidator;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vcs.impl.UpToDateLineNumberProviderImpl;
 import com.intellij.openapi.vfs.VirtualFile;
+import design.knowledge.stamp.adoc.git.AnnotationCommit;
 import design.knowledge.stamp.adoc.git.GitRepo;
-import design.knowledge.stamp.adoc.model.Affirmation;
+import design.knowledge.stamp.adoc.model.Annotation;
+import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.LineRange;
 import git4idea.GitUtil;
 import git4idea.commands.Git;
 import git4idea.commands.GitCommand;
@@ -34,37 +38,40 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * Turns editor lines into {@code Affirms} trailers and writes the empty
- * signed commit that carries them.
+ * Turns editor lines into {@code Annotation:} trailers of one kind — an
+ * affirmation, a refutation, or a comment — and writes the empty commit that
+ * carries them, the annotation text as its body.
  *
  * <p>Editor lines are mapped to HEAD lines through the platform's
- * up-to-date line mapping; a line changed since HEAD cannot be affirmed,
- * because an affirmation is anchored to a revision and the lines must be
+ * up-to-date line mapping; a line changed since HEAD cannot be annotated,
+ * because an annotation is anchored to a revision and the lines must be
  * committed before they are reviewed. Contiguous HEAD lines fold into one
  * trailer each. The hash is computed over the committed content, never the
  * editor's.
  */
-final class Affirmer {
+final class Annotator {
 
-    private Affirmer() { }
+    private Annotator() { }
 
     /**
-     * Affirm the given editor lines of {@code file}, after confirmation.
+     * Annotate the given editor lines of {@code file}, after asking for the text and the signing choice.
      *
      * @param project     the project
      * @param editor      the editor showing the file
      * @param file        the file
      * @param relative    the file's path relative to its repository root
-     * @param editorLines 0-based editor lines to affirm
+     * @param kind        the annotation kind
+     * @param editorLines 0-based editor lines to annotate
      */
-    static void affirmEditorLines(Project project, Editor editor, VirtualFile file, Path relative, List<Integer> editorLines) {
+    static void annotateEditorLines(Project project, Editor editor, VirtualFile file, Path relative, AnnotationKind kind,
+                                    List<Integer> editorLines) {
         UpToDateLineNumberProvider upToDate = new UpToDateLineNumberProviderImpl(editor.getDocument(), project);
         List<Integer> headLines = new ArrayList<>();
         for (int line : editorLines) {
             int head = upToDate.getLineNumber(line);
             if (head < 0) {
-                StampNotifications.warn(project, "Commit before affirming",
-                        "Line " + (line + 1) + " of " + file.getName() + " differs from HEAD. An affirmation is anchored to a revision, so commit the lines first.");
+                StampNotifications.warn(project, "Commit before annotating",
+                        "Line " + (line + 1) + " of " + file.getName() + " differs from HEAD. An annotation is anchored to a revision, so commit the lines first.");
                 return;
             }
             headLines.add(head + 1);                          // 1-based, as trailers are written
@@ -75,7 +82,7 @@ final class Affirmer {
         List<int[]> ranges = fold(headLines);
         new Task.Backgroundable(project, "Hashing lines of " + file.getName(), false) {
             private VirtualFile root;
-            private final List<Affirmation> affirmations = new ArrayList<>();
+            private final List<Annotation> annotations = new ArrayList<>();
             private String failure;
 
             @Override
@@ -86,7 +93,7 @@ final class Affirmer {
                         String revision = repo.headRevision();
                         List<String> content = repo.headLines(relative);
                         for (int[] range : ranges) {
-                            affirmations.add(Affirmation.of(relative, range[0], range[1], revision, content));
+                            annotations.add(Annotation.of(kind, LineRange.of(relative, range[0], range[1], revision, content)));
                         }
                     }
                 } catch (VcsException | IOException | RuntimeException ex) {
@@ -97,10 +104,10 @@ final class Affirmer {
             @Override
             public void onSuccess() {
                 if (failure != null) {
-                    StampNotifications.error(project, "Cannot affirm " + file.getName(), failure);
+                    StampNotifications.error(project, "Cannot annotate " + file.getName(), failure);
                     return;
                 }
-                confirmAndCommit(project, editor, file, root, relative, affirmations);
+                confirmAndCommit(project, editor, file, root, relative, kind, annotations);
             }
         }.queue();
     }
@@ -122,52 +129,60 @@ final class Affirmer {
     }
 
     private static void confirmAndCommit(Project project, Editor editor, VirtualFile file, VirtualFile root, Path relative,
-                                         List<Affirmation> affirmations) {
-        String trailers = affirmations.stream().map(Affirmation::trailer).collect(Collectors.joining("\n"));
-        int lines = affirmations.stream().mapToInt(Affirmation::lineCount).sum();
-        String subject = "Affirm " + relative + " " + affirmations.stream()
-                .map(a -> a.from() + "-" + a.to()).collect(Collectors.joining(", "));
+                                         AnnotationKind kind, List<Annotation> annotations) {
+        int lines = annotations.stream().flatMap(a -> a.lineRange().stream()).mapToInt(LineRange::lineCount).sum();
+        String subject = AnnotationCommit.subject(annotations);
+        String noun = lines + " line" + (lines == 1 ? "" : "s");
+        // A refutation without a reason is weak; the other kinds may stand on the trailer alone.
+        String text = Messages.showMultilineInputDialog(project,
+                subject + "\n\n" + (kind == AnnotationKind.REFUTATION
+                        ? "Why do you dispute these lines? The text becomes the commit body."
+                        : "Optional text for the commit body:"),
+                kind.verb() + " " + noun, "", Messages.getQuestionIcon(),
+                kind == AnnotationKind.REFUTATION ? new InputValidator() {
+                    @Override public boolean checkInput(String input) { return input != null && !input.isBlank(); }
+                    @Override public boolean canClose(String input) { return checkInput(input); }
+                } : null);
+        if (text == null) {
+            return;
+        }
+        String trailers = annotations.stream().map(Annotation::trailer).collect(Collectors.joining("\n"));
         int choice = Messages.showYesNoCancelDialog(project,
-                "An empty signed commit will record your review of " + lines + " line" + (lines == 1 ? "" : "s") + ":\n\n"
-                        + subject + "\n\n" + trailers + "\n\nSign the commit with -S (recommended; non-repudiation needs it)?",
-                "Affirm Lines", "Signed Commit", "Unsigned Commit", "Cancel", Messages.getQuestionIcon());
+                "An empty commit will record your " + kind.label().toLowerCase() + " of " + noun + ":\n\n"
+                        + subject + (text.isBlank() ? "" : "\n\n" + text.strip()) + "\n\n" + trailers
+                        + "\n\nSign the commit with -S (recommended; non-repudiation needs it)?",
+                kind.verb() + " " + noun, "Signed Commit", "Unsigned Commit", "Cancel", Messages.getQuestionIcon());
         if (choice == Messages.CANCEL) {
             return;
         }
         boolean sign = choice == Messages.YES;
-        new Task.Backgroundable(project, "Writing affirmation commit", false) {
+        new Task.Backgroundable(project, "Writing annotation commit", false) {
             private GitCommandResult result;
 
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
-                // The affirmation must stay empty: anything staged would ride along with it.
+                // The annotation must stay empty: anything staged would ride along with it.
                 GitLineHandler staged = new GitLineHandler(project, root, GitCommand.DIFF);
                 staged.addParameters("--cached", "--quiet");
                 staged.setSilent(true);
                 if (!Git.getInstance().runCommand(staged).success()) {
-                    result = GitCommandResult.error("The index has staged changes. Commit or unstage them first, so the affirmation commit records nothing but the trailers.");
+                    result = GitCommandResult.error("The index has staged changes. Commit or unstage them first, so the annotation commit records nothing but the annotation.");
                     return;
                 }
                 GitLineHandler handler = new GitLineHandler(project, root, GitCommand.COMMIT);
-                handler.addParameters("--allow-empty");
-                if (sign) {
-                    handler.addParameters("-S");
-                }
-                handler.addParameters("-m", subject);
-                for (Affirmation a : affirmations) {
-                    handler.addParameters("--trailer", a.trailer());
-                }
+                List<String> arguments = AnnotationCommit.arguments(annotations, text, sign);
+                handler.addParameters(arguments.subList(1, arguments.size()));     // the handler supplies "commit"
                 result = Git.getInstance().runCommand(handler);
             }
 
             @Override
             public void onSuccess() {
                 if (result.success()) {
-                    StampNotifications.info(project, "Affirmed " + lines + " line" + (lines == 1 ? "" : "s") + " of " + relative.getFileName(),
+                    StampNotifications.info(project, kind.label() + " of " + noun + " of " + relative.getFileName() + " recorded",
                             trailers.replace("\n", "<br>"));
-                    StampAnnotator.refresh(project, editor, file);        // the gutter shows the new check marks
+                    StampAnnotator.refresh(project, editor, file);        // the gutter shows the new marks
                 } else {
-                    StampNotifications.error(project, "Affirmation commit failed", result.getErrorOutputAsJoinedString());
+                    StampNotifications.error(project, "Annotation commit failed", result.getErrorOutputAsJoinedString());
                 }
             }
         }.queue();

@@ -23,6 +23,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.VcsException;
 import com.intellij.openapi.vfs.VirtualFile;
 import git4idea.GitUtil;
+import design.knowledge.stamp.adoc.model.AnnotationKind;
 import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
@@ -30,14 +31,42 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Affirms the selected lines (or the caret line): the range is anchored to
- * HEAD, hashed, and written as an empty signed commit with one
- * {@code Affirms:} trailer per contiguous range.
+ * Annotates the selected lines (or the caret line) with one kind — affirm,
+ * refute, or comment: the range is anchored to HEAD, hashed, and written as
+ * an empty commit with one {@code Annotation:} trailer per contiguous range.
+ * The platform instantiates one subclass per kind.
  */
-public final class AffirmLinesAction extends AnAction implements DumbAware {
+public abstract class AnnotateLinesAction extends AnAction implements DumbAware {
 
-    /** The platform instantiates actions reflectively. */
-    public AffirmLinesAction() { }
+    private final AnnotationKind kind;
+
+    AnnotateLinesAction(AnnotationKind kind) {
+        this.kind = kind;
+    }
+
+    /** Affirm Selected Lines. */
+    public static final class Affirm extends AnnotateLinesAction {
+        /** The platform instantiates actions reflectively. */
+        public Affirm() {
+            super(AnnotationKind.AFFIRMATION);
+        }
+    }
+
+    /** Refute Selected Lines. */
+    public static final class Refute extends AnnotateLinesAction {
+        /** The platform instantiates actions reflectively. */
+        public Refute() {
+            super(AnnotationKind.REFUTATION);
+        }
+    }
+
+    /** Comment on Selected Lines. */
+    public static final class Comment extends AnnotateLinesAction {
+        /** The platform instantiates actions reflectively. */
+        public Comment() {
+            super(AnnotationKind.COMMENT);
+        }
+    }
 
     @Override
     public @NotNull ActionUpdateThread getActionUpdateThread() {
@@ -76,10 +105,10 @@ public final class AffirmLinesAction extends AnAction implements DumbAware {
             @Override
             public void onSuccess() {
                 if (failure != null) {
-                    StampNotifications.error(project, "Cannot affirm " + file.getName(), failure);
+                    StampNotifications.error(project, "Cannot annotate " + file.getName(), failure);
                     return;
                 }
-                Affirmer.affirmEditorLines(project, editor, file, relative, lines);
+                Annotator.annotateEditorLines(project, editor, file, relative, kind, lines);
             }
         }.queue();
     }

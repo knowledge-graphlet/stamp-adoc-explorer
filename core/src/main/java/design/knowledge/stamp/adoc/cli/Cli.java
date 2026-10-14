@@ -24,10 +24,10 @@ import java.util.List;
 
 /**
  * Headless view of the extractor: {@code Cli <repo-root> <file>} prints one
- * line per STAMP (newest first, with the lines it introduced or affirmed),
- * any affirmation that could not be applied, and then the file with each
- * line prefixed by its STAMP's short SHA, date and author, and a check mark
- * when the line has been affirmed.
+ * line per STAMP (newest first, with the lines it introduced or annotated),
+ * any annotation that could not be applied, and then the file with each
+ * line prefixed by its STAMP's short SHA, date and author, and a mark when
+ * the line has been annotated: ✗ refuted, ✓ affirmed, … commented on.
  */
 public final class Cli {
 
@@ -54,9 +54,9 @@ public final class Cli {
                     snapshot.file(), snapshot.revisionSha().substring(0, 7), records.size(), snapshot.ignoredRevs().size());
             for (StampRecord r : records) {
                 String role = r.introduced().isEmpty()
-                        ? "affirmed " + r.affirmed().getCardinality() + " line(s) " + r.affirmed() + (r.signed() ? " signed" : " unsigned")
+                        ? annotated(r) + (r.signed() ? " signed" : " unsigned")
                         : "introduced " + r.introduced().getCardinality() + " line(s) " + r.introduced()
-                          + (r.affirmed().isEmpty() ? "" : ", affirmed " + r.affirmed());
+                          + (annotated(r).isEmpty() ? "" : ", " + annotated(r));
                 System.out.printf("  %s %s %-8s %-28s %s  %s%n", r.commitSha().substring(0, 7), DAY.format(r.time()),
                         r.status().name().toLowerCase(), r.author().email(), role, r.summary());
             }
@@ -65,19 +65,37 @@ public final class Cli {
             }
             int lines = maxLine(records);
             StampRecord[] byLine = new StampRecord[lines + 1];
-            int[] affirmedBy = new int[lines + 1];
+            char[] mark = new char[lines + 1];
             for (StampRecord r : records) {
                 r.introduced().forEach((int line) -> byLine[line] = r);
-                r.affirmed().forEach((int line) -> affirmedBy[line]++);
+            }
+            for (StampRecord r : records) {                      // a refutation outranks an affirmation, either outranks a comment
+                r.commented().forEach((int line) -> mark[line] = mark[line] == 0 ? '…' : mark[line]);
+                r.affirmed().forEach((int line) -> mark[line] = mark[line] == '✗' ? '✗' : '✓');
+                r.refuted().forEach((int line) -> mark[line] = '✗');
             }
             List<String> text = Files.readAllLines(root.resolve(snapshot.file()));
             for (int i = 1; i <= text.size() && i < byLine.length; i++) {
                 StampRecord r = byLine[i];
                 System.out.printf("%4d  %s %s %-16.16s %s | %s%n", i, r == null ? "       " : r.commitSha().substring(0, 7),
                         r == null ? "          " : DAY.format(r.time()), r == null ? "" : r.author().name(),
-                        affirmedBy[i] == 0 ? " " : "✓", text.get(i - 1));
+                        mark[i] == 0 ? " " : String.valueOf(mark[i]), text.get(i - 1));
             }
         }
+    }
+
+    private static String annotated(StampRecord r) {
+        List<String> parts = new ArrayList<>();
+        if (!r.affirmed().isEmpty()) {
+            parts.add("affirmed " + r.affirmed());
+        }
+        if (!r.refuted().isEmpty()) {
+            parts.add("refuted " + r.refuted());
+        }
+        if (!r.commented().isEmpty()) {
+            parts.add("commented on " + r.commented());
+        }
+        return String.join(", ", parts);
     }
 
     private static int maxLine(List<StampRecord> records) {
@@ -86,8 +104,10 @@ public final class Cli {
             if (!r.introduced().isEmpty()) {
                 max = Math.max(max, r.introduced().last());
             }
-            if (!r.affirmed().isEmpty()) {
-                max = Math.max(max, r.affirmed().last());
+            for (org.roaringbitmap.RoaringBitmap annotated : List.of(r.affirmed(), r.refuted(), r.commented())) {
+                if (!annotated.isEmpty()) {
+                    max = Math.max(max, annotated.last());
+                }
             }
         }
         return max;

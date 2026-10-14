@@ -16,13 +16,15 @@
         <br/><br/>
         <b>Annotate with STAMPs</b> (gutter menu, VCS menu) opens the gutter;
         clicking a STAMP highlights every line it introduced.
-        <b>Affirm Selected Lines</b> records review of a range as an empty
-        signed commit carrying <code>Affirms:</code> trailers, which the walker
-        will attach to those lines under the <code>affirmed</code> role.
+        <b>Affirm</b>, <b>Refute</b> and <b>Comment on Selected Lines</b>
+        record a review of a range as an empty commit, signed by default, whose
+        body is the annotation text and whose <code>Annotation:</code> trailers
+        name the kind as a Koncept reference; the walker attaches them to those
+        lines as affirmed, refuted or commented on, and an edit lapses them.
         <br/><br/>
-        Design: <code>dev-stamp-adoc-attribution</code> and
-        <code>dev-stamp-affirmation</code> in ike-lab-documents;
-        tracked in IKE-Network/ike-issues#468.
+        Design: <code>dev-stamp-adoc-attribution</code>,
+        <code>dev-stamp-annotation</code> and <code>dev-annotation-trailer</code>
+        in ike-lab-documents; tracked in IKE-Network/ike-issues#468 and #1300.
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
@@ -43,9 +45,23 @@
             <add-to-group group-id="VcsGroups" anchor="last"/>
         </action>
         <action id="stamp.adoc.Affirm"
-                class="design.knowledge.stamp.adoc.idea.AffirmLinesAction"
+                class="design.knowledge.stamp.adoc.idea.AnnotateLinesAction$Affirm"
                 text="Affirm Selected Lines…"
-                description="Record an empty signed commit whose Affirms trailers cover the selected lines as committed at HEAD">
+                description="Record an empty commit affirming the selected lines as committed at HEAD">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="VcsGroups" anchor="last"/>
+        </action>
+        <action id="stamp.adoc.Refute"
+                class="design.knowledge.stamp.adoc.idea.AnnotateLinesAction$Refute"
+                text="Refute Selected Lines…"
+                description="Record an empty commit refuting the selected lines as committed at HEAD, with your reason">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="VcsGroups" anchor="last"/>
+        </action>
+        <action id="stamp.adoc.Comment"
+                class="design.knowledge.stamp.adoc.idea.AnnotateLinesAction$Comment"
+                text="Comment on Selected Lines…"
+                description="Record an empty commit commenting on the selected lines as committed at HEAD">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
             <add-to-group group-id="VcsGroups" anchor="last"/>
         </action>

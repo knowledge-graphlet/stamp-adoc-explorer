@@ -9,13 +9,15 @@
  */
 package design.knowledge.stamp.adoc.git;
 
-import design.knowledge.stamp.adoc.model.Affirmation;
+import design.knowledge.stamp.adoc.model.Annotation;
+import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.StampHistory;
 import design.knowledge.stamp.adoc.model.StampFile;
 import design.knowledge.stamp.adoc.model.StampId;
 import design.knowledge.stamp.adoc.model.StampRecord;
+import design.knowledge.stamp.adoc.model.LineRange;
 import design.knowledge.stamp.adoc.model.Status;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.MergeCommand;
@@ -142,7 +144,7 @@ class HistoryWalkStampExtractorTest {
         StampFile head = stampsOf("doc.adoc");
         StampRecord affirmation = head.stamps().get(id(rita));
 
-        assertEquals(Status.AFFIRMED, affirmation.status());
+        assertEquals(Status.ACTIVE, affirmation.status(), "an annotation is a role on lines, not a status");
         assertEquals("rita", affirmation.author().name());
         assertEquals(Set.of(2), lines(affirmation.affirmed()));
         assertTrue(affirmation.introduced().isEmpty());
@@ -175,15 +177,63 @@ class HistoryWalkStampExtractorTest {
     @Test
     void staleOrMalformedAffirmationsAreReportedNotApplied() throws Exception {
         RevCommit a = commit("doc.adoc", "alice", "one", "two");
-        RevCommit wrongHash = emptyCommit("rita", "Affirm doc.adoc 1-2\n\nAffirms: doc.adoc:1-2@" + sha(a) + "#000000\n");
-        RevCommit malformed = emptyCommit("sam", "Affirm\n\nAffirms: doc.adoc lines one and two\n");
+        RevCommit wrongHash = emptyCommit("rita", "Affirm doc.adoc 1-2\n\nAnnotation: " + AnnotationKind.AFFIRMATION.ref()
+                + " doc.adoc:1-2@" + sha(a) + "#000000\n");
+        RevCommit malformed = emptyCommit("sam", "Affirm\n\nAnnotation: doc.adoc lines one and two\n");
+        RevCommit unknownKind = emptyCommit("tess", "Annotate\n\nAnnotation: k:uuid=00000000-0000-5000-8000-000000000000[Doubt] "
+                + LineRange.of(Path.of("doc.adoc"), 1, 1, a.name(), List.of("one", "two")).value() + "\n");
 
         StampFile head = stampsOf("doc.adoc");
 
         assertFalse(head.stamps().containsKey(id(wrongHash)));
         assertFalse(head.stamps().containsKey(id(malformed)));
-        assertEquals(2, head.problems().size(), head.problems().toString());
+        assertFalse(head.stamps().containsKey(id(unknownKind)));
+        assertEquals(3, head.problems().size(), head.problems().toString());
+        assertTrue(head.problems().get(0).contains("unknown annotation kind"), "newest commit first: " + head.problems());
         assertEquals(List.of(sha(a), sha(a)), attribution("doc.adoc"));
+    }
+
+    @Test
+    void aLaterJudgmentBySameAnnotatorSupersedesAndCommentsAccumulate() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        RevCommit affirmed = affirm("rita", "doc.adoc", 1, 3, a);
+        RevCommit refuted = annotate(AnnotationKind.REFUTATION, "rita", "doc.adoc", 2, 2, a, "Two is overstated.");
+        RevCommit samAffirms = affirm("sam", "doc.adoc", 2, 2, a);
+        RevCommit comment = annotate(AnnotationKind.COMMENT, "rita", "doc.adoc", 3, 3, a, "");
+
+        StampFile head = stampsOf("doc.adoc");
+
+        assertEquals(Set.of(1, 3), lines(head.stamps().get(id(affirmed)).affirmed()),
+                "rita's refutation of line 2 replaces her affirmation; her later comment on line 3 leaves it alone");
+        assertEquals(Set.of(2), lines(head.stamps().get(id(refuted)).refuted()));
+        assertEquals(Set.of(2), lines(head.stamps().get(id(samAffirms)).affirmed()), "sam's stance is his own");
+        assertEquals(Set.of(3), lines(head.stamps().get(id(comment)).commented()));
+        CommitEvent.AnnotationEvent refutation = historyOf("doc.adoc").events().stream()
+                .filter(e -> e.commit().sha().equals(refuted.name())).findFirst().orElseThrow().annotations().get(0);
+        assertEquals("Two is overstated.", refutation.text());
+    }
+
+    @Test
+    void annotationsOfAnotherFileOrOfTheGraphAreNotThisWalksConcern() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two");
+        RevCommit o = commit("other.adoc", "olga", "elsewhere");
+        affirm("rita", "other.adoc", 1, 1, o);
+        emptyCommit("sam", "Affirm a concept\n\nAnnotation: " + AnnotationKind.AFFIRMATION.ref()
+                + " k:uuid=6111dc03-6974-5a07-9b98-10cb7921e29a[Affirmation]@0e9d5f31-35c5-5bd4-a3b6-6fd0e0bb12e5\n");
+
+        StampHistory history = historyOf("doc.adoc");
+
+        assertEquals(List.of(sha(a)), history.events().stream().map(e -> e.commit().sha().substring(0, 7)).toList());
+        assertTrue(history.atHead().problems().isEmpty(), history.atHead().problems().toString());
+    }
+
+    @Test
+    void bodyIsTheTextBetweenSubjectAndTrailers() throws Exception {
+        commit("doc.adoc", "alice", "one");
+        RevCommit c = emptyCommit("rita", "Refute doc.adoc 1-1\n\nFirst paragraph.\n\nSecond paragraph.\n\nAnnotation: x\nRefs: o/r#1\n");
+
+        assertEquals("First paragraph.\n\nSecond paragraph.", HistoryWalkStampExtractor.bodyOf(c));
+        assertEquals("", HistoryWalkStampExtractor.bodyOf(emptyCommit("sam", "Affirm\n\nAnnotation: x\n")));
     }
 
     @Test
@@ -207,8 +257,12 @@ class HistoryWalkStampExtractorTest {
         CommitEvent third = events.get(2);
         assertFalse(third.touchesFile());
         assertEquals(second.manifest(), third.manifest());
-        assertEquals(1, third.affirmations().size());
-        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1)), third.affirmations().get(0).lines());
+        assertEquals(1, third.annotations().size());
+        CommitEvent.AnnotationEvent affirmation = third.annotations().get(0);
+        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1)), affirmation.lines());
+        assertEquals(AnnotationKind.AFFIRMATION, affirmation.kind());
+        assertEquals(0, affirmation.index());
+        assertEquals(b.name(), affirmation.reviewedSha(), "the version rita saw is the one b committed");
         assertEquals("rita", third.commit().author().name());
         CommitEvent fourth = events.get(3);
         assertEquals(List.of(new LineId(b.name(), 3), new LineId(a.name(), 3)), fourth.retired());
@@ -295,7 +349,7 @@ class HistoryWalkStampExtractorTest {
     }
 
     private static StampRecord record(RevCommit c) {
-        return new StampRecord(id(c), c.name(), null, null, null, null, null, null, null, false);
+        return new StampRecord(id(c), c.name(), null, null, null, null, null, null, null, null, null, false);
     }
 
     private static StampId id(RevCommit c) {
@@ -310,12 +364,18 @@ class HistoryWalkStampExtractorTest {
 
     /** An empty commit by {@code author} affirming lines {@code from}–{@code to} of {@code file} as committed at {@code rev}. */
     private RevCommit affirm(String author, String file, int from, int to, RevCommit rev) throws Exception {
+        return annotate(AnnotationKind.AFFIRMATION, author, file, from, to, rev, "");
+    }
+
+    /** An empty commit by {@code author} annotating lines {@code from}–{@code to} of {@code file} as committed at {@code rev}. */
+    private RevCommit annotate(AnnotationKind kind, String author, String file, int from, int to, RevCommit rev, String text) throws Exception {
         List<String> content;
         try (GitRepo repo = GitRepo.open(root)) {
             content = repo.linesAt(rev.name(), Path.of(file));
         }
-        Affirmation a = Affirmation.of(Path.of(file), from, to, rev.name(), content);
-        return emptyCommit(author, "Affirm " + file + " " + from + "-" + to + "\n\n" + a.trailer() + "\n");
+        Annotation a = Annotation.of(kind, LineRange.of(Path.of(file), from, to, rev.name(), content));
+        return emptyCommit(author, kind.verb() + " " + file + " " + from + "-" + to + "\n\n" + (text.isEmpty() ? "" : text + "\n\n")
+                + a.trailer() + "\n");
     }
 
     private RevCommit emptyCommit(String author, String message) throws Exception {

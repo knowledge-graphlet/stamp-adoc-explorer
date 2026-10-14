@@ -88,7 +88,7 @@ final class StampAnnotator {
                 editor.getGutter().registerTextAnnotation(gutter, gutter);
                 editor.putUserData(StampGutter.KEY, gutter);
                 if (!stamps.problems().isEmpty()) {
-                    StampNotifications.warn(project, stamps.problems().size() + " affirmation(s) not applied to " + file.getName(),
+                    StampNotifications.warn(project, stamps.problems().size() + " annotation(s) not applied to " + file.getName(),
                             String.join("<br>", stamps.problems()));
                 }
             }

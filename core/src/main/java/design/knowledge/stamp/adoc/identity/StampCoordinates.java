@@ -16,9 +16,9 @@ import java.time.Instant;
 /**
  * A git-derived STAMP expressed in the five coordinates a Tinkar version
  * carries, every concept-valued one as a deterministic {@link Identity}.
- * Status is the git-side status: both {@link Status#ACTIVE} and
- * {@link Status#AFFIRMED} are active versions in Tinkar terms, the
- * affirmation being a role on the lines rather than a state of the version.
+ * Status is the git-side status, {@link Status#ACTIVE} for every commit: an
+ * annotation is a role on the lines, recorded by its own STAMP, never a state
+ * of the version it annotates.
  *
  * @param stamp  identity of the STAMP itself, derived from the commit
  * @param status the git-side status

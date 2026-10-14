@@ -9,13 +9,13 @@
  */
 package design.knowledge.stamp.adoc.model;
 
-/** The status coordinate of a STAMP, as it bears on the current snapshot. */
+/**
+ * The status coordinate of a git-derived STAMP. Every commit's STAMP is
+ * active; an annotation is a statement beside content, never a status of it
+ * (ike-lab-documents topic {@code dev-stamp-annotation}). Withdrawal and
+ * cancellation join here when the walk records them.
+ */
 public enum Status {
-    /** The commit introduced lines that exist in the current snapshot. */
-    ACTIVE,
-    /**
-     * The commit affirmed lines that exist in the current snapshot without
-     * introducing any: a review recorded as {@code Affirms:} trailers.
-     */
-    AFFIRMED
+    /** The commit's versions are in force. */
+    ACTIVE
 }

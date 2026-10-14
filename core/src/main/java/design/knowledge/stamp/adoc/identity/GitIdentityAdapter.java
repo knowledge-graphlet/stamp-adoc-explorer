@@ -182,11 +182,10 @@ public final class GitIdentityAdapter {
      * @param event     a commit event from the history walk
      * @param component the repository or component the file belongs to
      * @param branch    the branch the history was read from
-     * @return the five coordinates of that commit's STAMP: active when it changed the file, affirmed when it only affirmed
+     * @return the five coordinates of that commit's STAMP, active whether it changed the file or annotated it
      */
     public StampCoordinates coordinatesOf(CommitEvent event, String component, String branch) {
-        Status status = event.touchesFile() ? Status.ACTIVE : Status.AFFIRMED;
-        return new StampCoordinates(stamp(event.commit().sha()), status, event.commit().time(),
+        return new StampCoordinates(stamp(event.commit().sha()), Status.ACTIVE, event.commit().time(),
                 author(event.commit().author()), module(component), path(branch));
     }
 

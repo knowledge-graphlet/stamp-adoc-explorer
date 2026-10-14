@@ -17,7 +17,7 @@ import java.util.List;
  * {@link StampHistory#events()}: the lines it introduced (with their text),
  * the lines an ignored formatting commit re-texted without taking
  * authorship, the lines it retired, the file's full line order afterwards,
- * and the affirmations it recorded. A graph materializer writes one
+ * and the annotations it recorded. A graph materializer writes one
  * transaction per event under the commit's STAMP; replaying the manifests
  * in order is the file's history.
  *
@@ -28,7 +28,7 @@ import java.util.List;
  * @param retexted     existing lines whose text an ignored commit changed
  * @param retired      lines no longer present after this commit
  * @param manifest     every line of the file after this commit, in order
- * @param affirmations affirmations this commit recorded, with the lines they landed on
+ * @param annotations  annotations this commit recorded on this file, with the lines they landed on
  */
 public record CommitEvent(
         Commit commit,
@@ -38,7 +38,7 @@ public record CommitEvent(
         List<Line> retexted,
         List<LineId> retired,
         List<LineId> manifest,
-        List<AffirmationEvent> affirmations
+        List<AnnotationEvent> annotations
 ) {
 
     /**
@@ -61,12 +61,19 @@ public record CommitEvent(
     public record Line(LineId id, String text) { }
 
     /**
-     * An affirmation as applied: the trailer and the lines it landed on.
+     * An annotation as applied to this file.
      *
-     * @param affirmation the parsed trailer
-     * @param lines       the identities of the affirmed lines, in order
+     * @param annotation  the parsed trailer
+     * @param index       the trailer's position among the commit's {@code Annotation:} trailers, 0-based;
+     *                    with the commit SHA it names the annotation when the trailer carries no {@code id}
+     * @param kind        the annotation's kind
+     * @param lines       the identities of the annotated lines, in order
+     * @param reviewedSha the full SHA of the last commit that changed the file at or before the
+     *                    range's anchoring revision: the version the annotator saw
+     * @param text        the commit body, without subject and trailers; empty when there is none
      */
-    public record AffirmationEvent(Affirmation affirmation, List<LineId> lines) { }
+    public record AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines,
+                                  String reviewedSha, String text) { }
 
     /** @return whether the commit changed the file's text or order */
     public boolean touchesFile() {

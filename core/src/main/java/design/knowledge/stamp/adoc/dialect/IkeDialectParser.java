@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
  * substitution are left to a renderer.
  *
  * <p>Line numbers in the result are 1-based, matching STAMP line positions and
- * {@code Affirms:} ranges.
+ * {@code Annotation:} line ranges.
  */
 public final class IkeDialectParser {
 

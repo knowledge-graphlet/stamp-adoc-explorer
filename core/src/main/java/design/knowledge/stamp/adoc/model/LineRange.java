@@ -19,27 +19,24 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * One {@code Affirms} trailer: a line range of a file at a revision, with a
- * short hash of the affirmed lines so a mistyped or stale range fails
- * loudly when the affirmation is written and again when it is walked.
+ * A line range of a file at a revision, with a short hash of the lines so a
+ * mistyped or stale range fails loudly when an annotation is written and
+ * again when it is walked.
  *
- * <pre>Affirms: topics/dev/stamp-adoc-attribution.adoc:14-22@3f2a91c#a1b2c3</pre>
+ * <pre>topics/dev/stamp-adoc-attribution.adoc:14-22@3f2a91c#a1b2c3</pre>
  *
  * <p>Line numbers are 1-based and inclusive. The revision is the abbreviated
  * SHA the lines were read from. The hash is the first six hex digits of the
- * SHA-256 of the lines joined with {@code \n}, so a range is affirmed as the
+ * SHA-256 of the lines joined with {@code \n}, so a range is annotated as the
  * reviewer saw it, trailing newline or not.
  *
- * @param file     path of the affirmed file relative to the repository root
- * @param from     first affirmed line, 1-based
- * @param to       last affirmed line, inclusive
+ * @param file     path of the file relative to the repository root
+ * @param from     first line, 1-based
+ * @param to       last line, inclusive
  * @param revision abbreviated SHA of the commit the lines were read from
- * @param hash     six hex digits over the affirmed lines
+ * @param hash     six hex digits over the lines
  */
-public record Affirmation(Path file, int from, int to, String revision, String hash) {
-
-    /** The trailer token the walker looks for. */
-    public static final String TRAILER = "Affirms";
+public record LineRange(Path file, int from, int to, String revision, String hash) implements AnnotationTarget {
 
     private static final int HASH_LENGTH = 6;
     private static final int REVISION_LENGTH = 7;
@@ -48,12 +45,12 @@ public record Affirmation(Path file, int from, int to, String revision, String h
     /**
      * Validates the record: a non-empty range, a revision, and a hash.
      */
-    public Affirmation {
+    public LineRange {
         if (from < 1 || to < from) {
-            throw new IllegalArgumentException("affirmed range must be 1-based and non-empty: " + from + "-" + to);
+            throw new IllegalArgumentException("a line range must be 1-based and non-empty: " + from + "-" + to);
         }
         if (revision == null || revision.length() < REVISION_LENGTH) {
-            throw new IllegalArgumentException("an affirmation is anchored to a revision: " + revision);
+            throw new IllegalArgumentException("a line range is anchored to a revision: " + revision);
         }
         if (hash == null || hash.length() != HASH_LENGTH) {
             throw new IllegalArgumentException("hash must be " + HASH_LENGTH + " hex digits: " + hash);
@@ -61,43 +58,41 @@ public record Affirmation(Path file, int from, int to, String revision, String h
     }
 
     /**
-     * Build an affirmation of lines {@code from}–{@code to} of {@code file} as
-     * they read at {@code revision}, hashing those lines of {@code content}.
+     * The range of lines {@code from}–{@code to} of {@code file} as they read at
+     * {@code revision}, hashing those lines of {@code content}.
      *
      * @param file     repository-relative path
      * @param from     first line, 1-based
      * @param to       last line, inclusive
      * @param revision full or abbreviated SHA the content was read from
      * @param content  every line of the file at that revision
-     * @return the affirmation, hashed over the range
+     * @return the range, hashed
      * @throws IllegalArgumentException if the range does not fit the content
      */
-    public static Affirmation of(Path file, int from, int to, String revision, List<String> content) {
+    public static LineRange of(Path file, int from, int to, String revision, List<String> content) {
         if (from < 1 || to > content.size() || to < from) {
-            throw new IllegalArgumentException(file + " has " + content.size() + " lines; cannot affirm " + from + "-" + to);
+            throw new IllegalArgumentException(file + " has " + content.size() + " lines; cannot annotate " + from + "-" + to);
         }
         String abbreviated = revision.length() > REVISION_LENGTH ? revision.substring(0, REVISION_LENGTH) : revision;
-        return new Affirmation(file, from, to, abbreviated, hashOf(content.subList(from - 1, to)));
+        return new LineRange(file, from, to, abbreviated, hashOf(content.subList(from - 1, to)));
     }
 
     /**
-     * Parse the value part of an {@code Affirms} trailer.
-     *
-     * @param value text after {@code Affirms:}, trimmed or not
-     * @return the affirmation
-     * @throws IllegalArgumentException if the text is not a trailer value
+     * @param value {@code path:from-to@rev#hash}, trimmed or not
+     * @return the range
+     * @throws IllegalArgumentException if the text is not a line range
      */
-    public static Affirmation parse(String value) {
+    public static LineRange parse(String value) {
         Matcher m = VALUE.matcher(value.strip());
         if (!m.matches()) {
-            throw new IllegalArgumentException("not an Affirms value: " + value);
+            throw new IllegalArgumentException("not a line range: " + value);
         }
-        return new Affirmation(Path.of(m.group("file")), Integer.parseInt(m.group("from")), Integer.parseInt(m.group("to")),
+        return new LineRange(Path.of(m.group("file")), Integer.parseInt(m.group("from")), Integer.parseInt(m.group("to")),
                 m.group("rev"), m.group("hash"));
     }
 
     /**
-     * @param lines the affirmed lines, in order
+     * @param lines the lines, in order
      * @return the first six hex digits of SHA-256 over the lines joined with {@code \n}
      */
     public static String hashOf(List<String> lines) {
@@ -118,17 +113,18 @@ public record Affirmation(Path file, int from, int to, String revision, String h
         return to <= content.size() && hash.equals(hashOf(content.subList(from - 1, to)));
     }
 
-    /** @return the trailer value, {@code path:from-to@rev#hash} */
+    /** @return {@code path:from-to@rev#hash} */
+    @Override
     public String value() {
-        return file.toString().replace('\\', '/') + ":" + from + "-" + to + "@" + revision + "#" + hash;
+        return gitPath() + ":" + from + "-" + to + "@" + revision + "#" + hash;
     }
 
-    /** @return the complete trailer line, {@code Affirms: path:from-to@rev#hash} */
-    public String trailer() {
-        return TRAILER + ": " + value();
+    /** @return the file path with forward slashes, as git names it */
+    public String gitPath() {
+        return file.toString().replace('\\', '/');
     }
 
-    /** @return the number of lines affirmed */
+    /** @return the number of lines in the range */
     public int lineCount() {
         return to - from + 1;
     }

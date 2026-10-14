@@ -21,7 +21,7 @@ import java.util.Set;
  * @param revisionSha the revision the snapshot describes (empty on an unborn branch)
  * @param ignoredRevs commits skipped for authorship through {@code .git-blame-ignore-revs}
  * @param stamps      every STAMP holding at least one current line under some role
- * @param problems    affirmations that could not be applied, one human-readable line each
+ * @param problems    annotations that could not be applied, one human-readable line each
  */
 public record StampFile(
         Path file,
