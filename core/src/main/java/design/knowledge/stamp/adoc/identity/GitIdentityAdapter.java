@@ -32,7 +32,8 @@ import java.util.UUID;
  *
  * <p>Every identity is a version-5 UUID of {@link #NAMESPACE} and a frozen
  * name key: {@code stamp:<sha>}, {@code author:<email>},
- * {@code module:<component>}, {@code path:<branch>}. <em>The namespace and
+ * {@code module:<component>}, {@code path:<branch>},
+ * {@code line:<sha>:<path>:<position>}. <em>The namespace and
  * the key forms are frozen</em>: changing either forks every identity
  * already written to a store.
  *
@@ -189,9 +190,12 @@ public final class GitIdentityAdapter {
                 author(event.commit().author()), module(component), path(branch));
     }
 
-    /** @return the identity of a line, {@code line:<sha>:<position>} under the namespace */
+    /**
+     * @return the identity of a line, {@code line:<sha>:<path>:<position>} under the namespace:
+     *         the same line of two files introduced by one commit is two identities
+     */
     public Identity line(design.knowledge.stamp.adoc.model.LineId id) {
-        return identity(id.key(), id.introducingSha().substring(0, 7) + ":" + id.position());
+        return identity(id.key(), id.introducingSha().substring(0, 7) + ":" + id.path() + ":" + id.position());
     }
 
     /** @return the identity of a document, keyed by component and repository-relative path */

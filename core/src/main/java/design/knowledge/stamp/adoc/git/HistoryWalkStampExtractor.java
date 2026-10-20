@@ -374,7 +374,7 @@ final class HistoryWalkStampExtractor {
                 for (int j = 0; j < newCount; j++) {
                     String newText = t.text().getString(edit.getBeginB() + j);
                     if (!t.ignored() || j >= replaced) {
-                        LineId id = new LineId(t.commit().name(), nextIds.size() + 1);
+                        LineId id = new LineId(t.commit().name(), t.pathAtCommit(), nextIds.size() + 1);
                         if (!t.ignored()) {
                             nextIntro.add(stamp);
                             nextMarks.add(null);                 // an edited line is a new claim: unannotated

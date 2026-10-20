@@ -248,25 +248,62 @@ class HistoryWalkStampExtractorTest {
         assertEquals(List.of(sha(a), sha(b), sha(rita), sha(c)), events.stream().map(e -> e.commit().sha().substring(0, 7)).toList());
         CommitEvent first = events.get(0);
         assertEquals(List.of("one", "two", "three"), first.introduced().stream().map(CommitEvent.Line::text).toList());
-        assertEquals(List.of(new LineId(a.name(), 1), new LineId(a.name(), 2), new LineId(a.name(), 3)), first.manifest());
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 2), new LineId(a.name(), "doc.adoc", 3)), first.manifest());
         CommitEvent second = events.get(1);
         assertEquals(List.of("title", "two-b"), second.introduced().stream().map(CommitEvent.Line::text).toList());
-        assertEquals(List.of(new LineId(a.name(), 2)), second.retired(), "the edited line retires; its replacement is a new identity");
-        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1), new LineId(b.name(), 3), new LineId(a.name(), 3)), second.manifest(),
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2)), second.retired(), "the edited line retires; its replacement is a new identity");
+        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 1), new LineId(b.name(), "doc.adoc", 3), new LineId(a.name(), "doc.adoc", 3)), second.manifest(),
                 "unchanged lines keep the identity they were introduced under, wherever they move");
         CommitEvent third = events.get(2);
         assertFalse(third.touchesFile());
         assertEquals(second.manifest(), third.manifest());
         assertEquals(1, third.annotations().size());
         CommitEvent.AnnotationEvent affirmation = third.annotations().get(0);
-        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1)), affirmation.lines());
+        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 1)), affirmation.lines());
         assertEquals(AnnotationKind.AFFIRMATION, affirmation.kind());
         assertEquals(0, affirmation.index());
         assertEquals(b.name(), affirmation.reviewedSha(), "the version rita saw is the one b committed");
         assertEquals("rita", third.commit().author().name());
         CommitEvent fourth = events.get(3);
-        assertEquals(List.of(new LineId(b.name(), 3), new LineId(a.name(), 3)), fourth.retired());
-        assertEquals(List.of(new LineId(b.name(), 1), new LineId(a.name(), 1)), fourth.manifest());
+        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 3), new LineId(a.name(), "doc.adoc", 3)), fourth.retired());
+        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 1)), fourth.manifest());
+    }
+
+    @Test
+    void linesIntroducedTogetherInTwoFilesAreDistinctIdentities() throws Exception {
+        // One commit introduces both files: without the path in the identity, line n of each was one line.
+        Files.createDirectories(root.resolve("topics"));
+        Files.writeString(root.resolve("topics/medication.adoc"), "= Medication\n\nA dose.\n");
+        Files.writeString(root.resolve("topics/integrity.adoc"), "= Integrity\n\nA reference.\n");
+        git.add().addFilepattern("topics/medication.adoc").addFilepattern("topics/integrity.adoc").call();
+        PersonIdent who = ident("alice");
+        RevCommit a = git.commit().setAuthor(who).setCommitter(who).setMessage("alice adds two topics").call();
+
+        List<LineId> medication = historyOf("topics/medication.adoc").events().get(0).manifest();
+        List<LineId> integrity = historyOf("topics/integrity.adoc").events().get(0).manifest();
+
+        assertEquals(List.of(new LineId(a.name(), "topics/medication.adoc", 1), new LineId(a.name(), "topics/medication.adoc", 2),
+                new LineId(a.name(), "topics/medication.adoc", 3)), medication);
+        assertEquals(List.of(new LineId(a.name(), "topics/integrity.adoc", 1), new LineId(a.name(), "topics/integrity.adoc", 2),
+                new LineId(a.name(), "topics/integrity.adoc", 3)), integrity);
+        Set<LineId> shared = new java.util.HashSet<>(medication);
+        shared.retainAll(integrity);
+        assertEquals(Set.of(), shared, "no line identity is shared between the two files");
+        assertEquals(6, java.util.stream.Stream.concat(medication.stream(), integrity.stream()).map(LineId::key).distinct().count(),
+                "six lines, six keys");
+    }
+
+    @Test
+    void aLineKeepsThePathItWasIntroducedUnderAcrossARename() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two");
+        move("doc.adoc", "topics/doc.adoc", "mover");
+        RevCommit d = commit("topics/doc.adoc", "dave", "one", "two", "three");
+
+        List<CommitEvent> events = historyOf("topics/doc.adoc").events();
+
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 2), new LineId(d.name(), "topics/doc.adoc", 3)),
+                events.get(events.size() - 1).manifest(),
+                "a line's identity names the path at its introducing commit; a later rename does not re-mint it");
     }
 
     @Test
@@ -278,9 +315,9 @@ class HistoryWalkStampExtractorTest {
         CommitEvent event = historyOf("doc.adoc").events().get(1);
 
         assertTrue(event.ignored());
-        assertEquals(List.of(new LineId(a.name(), 1), new LineId(a.name(), 2)), event.retexted().stream().map(CommitEvent.Line::id).toList());
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 2)), event.retexted().stream().map(CommitEvent.Line::id).toList());
         assertEquals(List.of("  one", "  two"), event.retexted().stream().map(CommitEvent.Line::text).toList());
-        assertEquals(List.of(new LineId(reflow.name(), 3)), event.introduced().stream().map(CommitEvent.Line::id).toList(),
+        assertEquals(List.of(new LineId(reflow.name(), "doc.adoc", 3)), event.introduced().stream().map(CommitEvent.Line::id).toList(),
                 "a line an ignored commit adds beyond what it replaced is a fresh identity");
         assertEquals(List.of(sha(a), sha(a), sha(a)), attribution("doc.adoc"), "attribution still ignores the reflow");
     }

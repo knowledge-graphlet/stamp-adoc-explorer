@@ -9,6 +9,7 @@
  */
 package design.knowledge.stamp.adoc.identity;
 
+import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.Person;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +48,11 @@ class GitIdentityAdapterTest {
         assertEquals(Uuid5.of(GitIdentityAdapter.NAMESPACE, "module:anf"), adapter.module("anf").uuid());
         assertEquals(Uuid5.of(GitIdentityAdapter.NAMESPACE, "path:main"), adapter.path("main").uuid());
         assertNotEquals(adapter.module("anf").uuid(), adapter.path("anf").uuid(), "kinds never collide");
+        LineId medication = new LineId("3f2a91c0ffee", "topics/medication.adoc", 3);
+        assertEquals(Uuid5.of(GitIdentityAdapter.NAMESPACE, "line:3f2a91c0ffee:topics/medication.adoc:3"), adapter.line(medication).uuid());
+        assertEquals("3f2a91c:topics/medication.adoc:3", adapter.line(medication).name());
+        assertNotEquals(adapter.line(medication).uuid(), adapter.line(new LineId("3f2a91c0ffee", "topics/integrity.adoc", 3)).uuid(),
+                "line 3 of two files introduced by one commit are two lines");
     }
 
     @Test
