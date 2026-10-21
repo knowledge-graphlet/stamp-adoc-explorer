@@ -477,12 +477,10 @@ class HistoryWalkStampExtractorTest {
     }
 
     @Test
-    void aSentenceJudgmentSurvivesAReflowButNotARevision() throws Exception {
+    void aJudgedSentenceKeepsItsIdentityThroughAReflow() throws Exception {
         RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes it,", "renews it.");
         annotateColumns(AnnotationKind.AFFIRMATION, "bob", "doc.adoc", 1, 22, 2, 10, a);
         RevCommit reflow = commit("doc.adoc", "carol", "The lease is a loan.", "A machine takes it, renews it.");
-        CommitEvent.AnnotationEvent later = new CommitEvent.AnnotationEvent(null, 0, AnnotationKind.AFFIRMATION, List.of(), "", "");
-        assertEquals(List.of(), later.sentences());
         List<CommitEvent> events = historyOf("doc.adoc").events();
         assertFalse(events.getLast().segments().changed(), "the reflow changed no sentence: " + reflow.name());
         assertEquals(events.get(1).annotations().getFirst().sentences().getFirst(), events.getLast().segments().manifest().get(1),
