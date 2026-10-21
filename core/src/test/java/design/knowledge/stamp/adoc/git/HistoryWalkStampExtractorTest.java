@@ -13,6 +13,7 @@ import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.LineId;
+import design.knowledge.stamp.adoc.model.SegmentId;
 import design.knowledge.stamp.adoc.model.StampHistory;
 import design.knowledge.stamp.adoc.model.StampFile;
 import design.knowledge.stamp.adoc.model.StampId;
@@ -407,6 +408,51 @@ class HistoryWalkStampExtractorTest {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    // ── sentences and inline elements below the line (IKE-Network/ike-issues#1313) ──
+
+    @Test
+    void aReflowKeepsEverySentence() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes a working set", "and returns it when done.");
+        commit("doc.adoc", "bob", "The lease is a loan.", "A machine takes a working set and returns it when done.");
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        CommitEvent.Segments first = events.get(0).segments();
+        CommitEvent.Segments reflow = events.get(1).segments();
+        assertEquals(List.of(new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 1),
+                new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 2)), first.manifest());
+        assertTrue(events.get(1).touchesFile(), "the lines changed");
+        assertFalse(reflow.changed(), "no sentence did");
+        assertEquals(first.manifest(), reflow.manifest());
+    }
+
+    @Test
+    void aRevisedSentenceKeepsItsIdentityAndANewOneIsIntroducedWhereItStands() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "Exact TTL value and renewal cadence are proposed. Directory name is open.");
+        RevCommit b = commit("doc.adoc", "bob", "A bus with an hour of latency is not a bus.",
+                "Exact TTL value and renewal cadence are in force since August. Directory name is open.");
+        CommitEvent.Segments segments = historyOf("doc.adoc").events().get(1).segments();
+        SegmentId ttl = new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 1);
+        assertEquals(List.of(new CommitEvent.Segment(ttl, "Exact TTL value and renewal cadence are in force since August.")), segments.retexted());
+        assertEquals(List.of(new CommitEvent.Segment(new SegmentId(SegmentId.Kind.SENTENCE, b.name(), "doc.adoc", 1),
+                "A bus with an hour of latency is not a bus.")), segments.introduced());
+        assertEquals(List.of(), segments.retired());
+        assertEquals(ttl, segments.manifest().get(1));
+    }
+
+    @Test
+    void inlineElementsPairWithinTheirSentence() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "See <<old-target>> for *more*. Then stop.");
+        RevCommit b = commit("doc.adoc", "bob", "See <<new-target>> for *more* and _less_. Then stop.");
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        CommitEvent.Segments first = events.get(0).segments();
+        CommitEvent.Segments second = events.get(1).segments();
+        assertEquals(2, first.inlineManifest().size());
+        SegmentId xref = new SegmentId(SegmentId.Kind.INLINE, a.name(), "doc.adoc", 1);
+        assertEquals(List.of(new CommitEvent.Segment(xref, "<<new-target>>")), second.inlineRetexted(), "a changed target is a new version");
+        assertEquals(List.of(new CommitEvent.Segment(new SegmentId(SegmentId.Kind.INLINE, b.name(), "doc.adoc", 3), "_less_")),
+                second.inlineIntroduced());
+        assertEquals(1, second.retexted().size(), "the sentence is revised, not replaced");
+    }
 
     private StampFile stampsOf(String file) throws IOException {
         return historyOf(file).atHead();

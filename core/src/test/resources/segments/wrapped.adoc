@@ -1,0 +1,36 @@
+= Leases for a Fleet
+
+A ((working-set lease)) grants one machine at a time the right to write a
+working set — any project root under `~/ike-dev` that IntelliJ would open —
+while Syncthing carries the working tree to every machine. The lease record
+lives in the synced folder itself, so taking a lease and announcing it are
+the same act: every peer observes the change within seconds.
+
+indexterm:[multi-machine development, single-writer]
+The lease generalizes that rule to working-set granularity and makes it
+machine-enforced. Single-writer becomes an invariant per working set;
+concurrency comes from holding *different* working sets on different
+machines.footnote:[Siblings exist for this. See <<siblings>>.]
+
+== Recall
+
+.Why recall is immediate
+* A recall never waits, e.g. for the TTL to lapse. The TTL is a
+  staleness horizon, not a queue.
+* Dr. Smith asked why. J. Doe answered.
+
+NOTE: A returned record stays where it is. Its state changes.
+
+[cols="1,2"]
+|===
+| Verb | Meaning
+
+| take
+| Gain the working set. Renew it while working.
+|===
+
+Term:: A definition that runs on. It has two sentences.
+
+----
+Code. Is not. Segmented.
+----

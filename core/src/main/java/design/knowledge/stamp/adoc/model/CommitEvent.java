@@ -30,6 +30,8 @@ import java.util.List;
  * @param retired      lines no longer present after this commit
  * @param manifest     every line of the file after this commit, in order
  * @param annotations  annotations this commit recorded on this file, with the lines they landed on
+ * @param segments     what the commit did to the file's sentences and inline elements, which have
+ *                     identities of their own below the line (IKE-Network/ike-issues#1313)
  */
 public record CommitEvent(
         Commit commit,
@@ -39,7 +41,8 @@ public record CommitEvent(
         List<Line> retexted,
         List<LineId> retired,
         List<LineId> manifest,
-        List<AnnotationEvent> annotations
+        List<AnnotationEvent> annotations,
+        Segments segments
 ) {
 
     /**
@@ -75,6 +78,50 @@ public record CommitEvent(
      */
     public record AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines,
                                   String reviewedSha, String text) { }
+
+    /**
+     * A sentence or an inline element with its text at this commit.
+     *
+     * @param id   its identity
+     * @param text its source, whitespace normalized
+     */
+    public record Segment(SegmentId id, String text) { }
+
+    /**
+     * What one commit did below the line: the sentences and inline elements it introduced,
+     * re-texted (paired with a predecessor, so keeping its identity) and retired, and every one of
+     * each after it, in the order {@code Segmenter} lists them for the file's text at this commit.
+     *
+     * @param introduced       new sentences, in order
+     * @param retexted         sentences whose text the commit changed
+     * @param retired          sentences no longer present
+     * @param manifest         every sentence after the commit, in order
+     * @param inlineIntroduced new inline elements, in order
+     * @param inlineRetexted   inline elements whose text the commit changed
+     * @param inlineRetired    inline elements no longer present
+     * @param inlineManifest   every inline element after the commit, in order
+     */
+    public record Segments(List<Segment> introduced, List<Segment> retexted, List<SegmentId> retired, List<SegmentId> manifest,
+                           List<Segment> inlineIntroduced, List<Segment> inlineRetexted, List<SegmentId> inlineRetired,
+                           List<SegmentId> inlineManifest) {
+
+        /**
+         * Nothing changed below the line; the manifests stand.
+         *
+         * @param manifest       every sentence
+         * @param inlineManifest every inline element
+         * @return the empty change
+         */
+        public static Segments unchanged(List<SegmentId> manifest, List<SegmentId> inlineManifest) {
+            return new Segments(List.of(), List.of(), List.of(), manifest, List.of(), List.of(), List.of(), inlineManifest);
+        }
+
+        /** @return whether any sentence or inline element was introduced, re-texted or retired */
+        public boolean changed() {
+            return !introduced.isEmpty() || !retexted.isEmpty() || !retired.isEmpty()
+                    || !inlineIntroduced.isEmpty() || !inlineRetexted.isEmpty() || !inlineRetired.isEmpty();
+        }
+    }
 
     /** @return whether the commit changed the file's text or order */
     public boolean touchesFile() {

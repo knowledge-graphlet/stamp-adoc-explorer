@@ -9,11 +9,15 @@
  */
 package design.knowledge.stamp.adoc.git;
 
+import design.knowledge.stamp.adoc.dialect.IkeDialectParser;
+import design.knowledge.stamp.adoc.dialect.Segmenter;
+import design.knowledge.stamp.adoc.dialect.TextPairing;
 import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.LineRange;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.LineId;
+import design.knowledge.stamp.adoc.model.SegmentId;
 import design.knowledge.stamp.adoc.model.Person;
 import design.knowledge.stamp.adoc.model.StampFile;
 import design.knowledge.stamp.adoc.model.StampHistory;
@@ -78,6 +82,14 @@ import java.util.TreeMap;
  * blank line or a delimiter, is too common to be followed that way. A
  * revised line still drops its annotations here, since a judgment is about
  * the text the annotator read; a moved line keeps them.
+ *
+ * <p><b>Sentences and inline elements have identities too</b> (IKE-Network/ike-issues#1313;
+ * {@code design-2026-10-21-stored-text-segments}). After each commit the file is segmented
+ * ({@link Segmenter}) and its sentences paired with the previous commit's by {@link TextPairing}:
+ * equal, moved, revised by word overlap, or the positional residue; the inline elements likewise,
+ * a revision only within its kind and its sentence. Sentences cross diff hunks, so they are paired
+ * over the whole file, never per hunk, and a reflow, which changes lines but no sentence's text,
+ * leaves every sentence's identity alone.
  *
  * <p>Annotations are {@code Annotation: <kind> path:from-to@rev#hash}
  * trailers on any first-parent commit, typically an empty signed one: an
@@ -160,6 +172,7 @@ final class HistoryWalkStampExtractor {
                 RevCommit commit = t != null ? t.commit() : annots.get(index).get(0).commit();
                 String pathAtCommit = t != null ? t.pathAtCommit() : replay.lastPath;
                 Replay.Delta delta = t != null ? replay.apply(t) : Replay.Delta.none();
+                CommitEvent.Segments segments = t != null ? replay.segment(t) : replay.segmentsUnchanged();
                 List<CommitEvent.AnnotationEvent> applied = new ArrayList<>();
                 for (Annot a : annots.getOrDefault(index, List.of())) {
                     List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems);
@@ -169,7 +182,7 @@ final class HistoryWalkStampExtractor {
                     }
                 }
                 events.add(new CommitEvent(commitOf(commit), pathAtCommit, t != null && t.ignored(),
-                        delta.introduced(), delta.retexted(), delta.retired(), List.copyOf(replay.ids), applied));
+                        delta.introduced(), delta.retexted(), delta.retired(), List.copyOf(replay.ids), applied, segments));
                 snapshots.add(replay.snapshot(index, commit.name()));
             }
             int headLines = lineCount(head, gitPath);
@@ -354,6 +367,12 @@ final class HistoryWalkStampExtractor {
         private RawText text = new RawText(new byte[0]);
         private String lastPath = "";
         private final Map<String, StampRecord> bySha = new LinkedHashMap<>();
+        private List<SegmentId> sentenceIds = List.of();
+        private List<String> sentenceTexts = List.of();
+        private List<SegmentId> inlineIds = List.of();
+        private List<String> inlineSignatures = List.of();
+        private List<String> inlineKinds = List.of();
+        private List<SegmentId> inlineSentences = List.of();     // the sentence each inline element is in
 
         /** What a touch did, for the event stream. */
         record Delta(List<CommitEvent.Line> introduced, List<CommitEvent.Line> retexted, List<LineId> retired) {
@@ -465,6 +484,88 @@ final class HistoryWalkStampExtractor {
             text = t.text();
             lastPath = t.pathAtCommit();
             return new Delta(introduced, retexted, retired);
+        }
+
+        /** The sentences and inline elements as they stand, when a step changes no text. */
+        CommitEvent.Segments segmentsUnchanged() {
+            return CommitEvent.Segments.unchanged(sentenceIds, inlineIds);
+        }
+
+        /**
+         * Segments the file as the touch left it and pairs its sentences and inline elements with
+         * the previous ones: a paired unit keeps its identity, an unpaired one is introduced under
+         * this commit at its position, and what is left over is retired.
+         */
+        CommitEvent.Segments segment(Touch t) {
+            Segmenter.Segmentation now = Segmenter.of(IkeDialectParser.parse(lines(t.text())));
+            String sha = t.commit().name();
+            List<String> texts = now.texts();
+            int[] map = TextPairing.pair(sentenceTexts, texts);
+            List<SegmentId> ids = new ArrayList<>(texts.size());
+            List<CommitEvent.Segment> introduced = new ArrayList<>();
+            List<CommitEvent.Segment> retexted = new ArrayList<>();
+            boolean[] kept = new boolean[sentenceIds.size()];
+            for (int j = 0; j < texts.size(); j++) {
+                if (map[j] >= 0) {
+                    SegmentId id = sentenceIds.get(map[j]);
+                    kept[map[j]] = true;
+                    ids.add(id);
+                    if (!texts.get(j).equals(sentenceTexts.get(map[j]))) {
+                        retexted.add(new CommitEvent.Segment(id, texts.get(j)));
+                    }
+                } else {
+                    SegmentId id = new SegmentId(SegmentId.Kind.SENTENCE, sha, t.pathAtCommit(), j + 1);
+                    ids.add(id);
+                    introduced.add(new CommitEvent.Segment(id, texts.get(j)));
+                }
+            }
+            List<SegmentId> retired = new ArrayList<>();
+            for (int i = 0; i < kept.length; i++) {
+                if (!kept[i]) {
+                    retired.add(sentenceIds.get(i));
+                }
+            }
+
+            List<String> signatures = now.signatures();
+            List<String> kinds = now.inlines().stream().map(inline -> inline.element().name()).toList();
+            List<SegmentId> owners = now.inlines().stream().map(inline -> ids.get(inline.sentence())).toList();
+            List<String> oldKinds = inlineKinds;
+            List<SegmentId> oldOwners = inlineSentences;
+            int[] inlineMap = TextPairing.pair(inlineSignatures, signatures,
+                    (i, j) -> oldKinds.get(i).equals(kinds.get(j)) && oldOwners.get(i).equals(owners.get(j)));
+            List<SegmentId> inline = new ArrayList<>(signatures.size());
+            List<CommitEvent.Segment> inlineIntroduced = new ArrayList<>();
+            List<CommitEvent.Segment> inlineRetexted = new ArrayList<>();
+            boolean[] inlineKept = new boolean[inlineIds.size()];
+            for (int j = 0; j < signatures.size(); j++) {
+                String text = now.inlines().get(j).text();
+                if (inlineMap[j] >= 0) {
+                    SegmentId id = inlineIds.get(inlineMap[j]);
+                    inlineKept[inlineMap[j]] = true;
+                    inline.add(id);
+                    if (!signatures.get(j).equals(inlineSignatures.get(inlineMap[j]))) {
+                        inlineRetexted.add(new CommitEvent.Segment(id, text));
+                    }
+                } else {
+                    SegmentId id = new SegmentId(SegmentId.Kind.INLINE, sha, t.pathAtCommit(), j + 1);
+                    inline.add(id);
+                    inlineIntroduced.add(new CommitEvent.Segment(id, text));
+                }
+            }
+            List<SegmentId> inlineRetired = new ArrayList<>();
+            for (int i = 0; i < inlineKept.length; i++) {
+                if (!inlineKept[i]) {
+                    inlineRetired.add(inlineIds.get(i));
+                }
+            }
+            sentenceIds = List.copyOf(ids);
+            sentenceTexts = texts;
+            inlineIds = List.copyOf(inline);
+            inlineSignatures = signatures;
+            inlineKinds = kinds;
+            inlineSentences = owners;
+            return new CommitEvent.Segments(introduced, retexted, retired, sentenceIds, inlineIntroduced, inlineRetexted, inlineRetired,
+                    inlineIds);
         }
 
         /**
