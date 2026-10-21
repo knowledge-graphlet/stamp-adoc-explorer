@@ -15,8 +15,8 @@ import java.util.List;
 /**
  * What one commit on the first-parent chain did to the file, oldest first in
  * {@link StampHistory#events()}: the lines it introduced (with their text),
- * the lines an ignored formatting commit re-texted without taking
- * authorship, the lines it retired, the file's full line order afterwards,
+ * the lines it re-texted, which keep their identity (a revision, or an
+ * ignored formatting commit that takes no authorship), the lines it retired, the file's full line order afterwards,
  * and the annotations it recorded. A graph materializer writes one
  * transaction per event under the commit's STAMP; replaying the manifests
  * in order is the file's history.
@@ -25,7 +25,8 @@ import java.util.List;
  * @param pathAtCommit the path the file had at this commit
  * @param ignored      whether the commit is listed in {@code .git-blame-ignore-revs}
  * @param introduced   new lines, in file order
- * @param retexted     existing lines whose text an ignored commit changed
+ * @param retexted     existing lines whose text the commit changed: lines paired in order within a
+ *                     diff hunk, which keep their identity (IKE-Network/ike-issues#1313)
  * @param retired      lines no longer present after this commit
  * @param manifest     every line of the file after this commit, in order
  * @param annotations  annotations this commit recorded on this file, with the lines they landed on

@@ -250,10 +250,12 @@ class HistoryWalkStampExtractorTest {
         assertEquals(List.of("one", "two", "three"), first.introduced().stream().map(CommitEvent.Line::text).toList());
         assertEquals(List.of(new LineId(a.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 2), new LineId(a.name(), "doc.adoc", 3)), first.manifest());
         CommitEvent second = events.get(1);
-        assertEquals(List.of("title", "two-b"), second.introduced().stream().map(CommitEvent.Line::text).toList());
-        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2)), second.retired(), "the edited line retires; its replacement is a new identity");
-        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 1), new LineId(b.name(), "doc.adoc", 3), new LineId(a.name(), "doc.adoc", 3)), second.manifest(),
-                "unchanged lines keep the identity they were introduced under, wherever they move");
+        assertEquals(List.of("title"), second.introduced().stream().map(CommitEvent.Line::text).toList());
+        assertEquals(List.of(new CommitEvent.Line(new LineId(a.name(), "doc.adoc", 2), "two-b")), second.retexted(),
+                "the edited line keeps its identity: a revision, re-texted under bob's commit");
+        assertTrue(second.retired().isEmpty(), "nothing retires when a line is revised in place");
+        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 2), new LineId(a.name(), "doc.adoc", 3)), second.manifest(),
+                "every line keeps the identity it was introduced under, wherever it moves and however it is revised");
         CommitEvent third = events.get(2);
         assertFalse(third.touchesFile());
         assertEquals(second.manifest(), third.manifest());
@@ -265,8 +267,57 @@ class HistoryWalkStampExtractorTest {
         assertEquals(b.name(), affirmation.reviewedSha(), "the version rita saw is the one b committed");
         assertEquals("rita", third.commit().author().name());
         CommitEvent fourth = events.get(3);
-        assertEquals(List.of(new LineId(b.name(), "doc.adoc", 3), new LineId(a.name(), "doc.adoc", 3)), fourth.retired());
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2), new LineId(a.name(), "doc.adoc", 3)), fourth.retired());
         assertEquals(List.of(new LineId(b.name(), "doc.adoc", 1), new LineId(a.name(), "doc.adoc", 1)), fourth.manifest());
+    }
+
+    @Test
+    void aRevisedLineKeepsItsIdentityAndTakesAuthorshipOfItsText() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        RevCommit b = commit("doc.adoc", "bob", "one", "two, revised", "three");
+
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        CommitEvent revision = events.get(1);
+        assertTrue(revision.introduced().isEmpty(), "nothing new");
+        assertTrue(revision.retired().isEmpty(), "nothing retired");
+        assertEquals(List.of(new CommitEvent.Line(new LineId(a.name(), "doc.adoc", 2), "two, revised")), revision.retexted());
+        assertEquals(events.get(0).manifest(), revision.manifest(), "the same three lines");
+        assertEquals(List.of(sha(a), sha(b), sha(a)), attribution("doc.adoc"), "bob wrote the revised text");
+    }
+
+    @Test
+    void aHunkPairsInOrderAndWhatIsLeftOverIsIntroducedOrRetired() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "keep", "x1", "x2", "x3", "end");
+        RevCommit b = commit("doc.adoc", "bob", "keep", "y1", "y2", "end");               // three replaced by two
+        RevCommit c = commit("doc.adoc", "carol", "keep", "z1", "z2", "z3", "z4", "end"); // two replaced by four
+
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        CommitEvent fewer = events.get(1);
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2), new LineId(a.name(), "doc.adoc", 3)),
+                fewer.retexted().stream().map(CommitEvent.Line::id).toList(), "the first two pair off");
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 4)), fewer.retired(), "the third retires");
+        CommitEvent more = events.get(2);
+        assertEquals(List.of("z1", "z2"), more.retexted().stream().map(CommitEvent.Line::text).toList(), "two pair off");
+        assertEquals(List.of(new CommitEvent.Line(new LineId(c.name(), "doc.adoc", 4), "z3"), new CommitEvent.Line(new LineId(c.name(), "doc.adoc", 5), "z4")),
+                more.introduced(), "the rest are new lines");
+        assertTrue(more.retired().isEmpty());
+    }
+
+    @Test
+    void aLineMovedUnchangedKeepsItsIdentityAndItsAnnotations() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "Alpha claim.", "Beta claim.", "----", "Gamma claim.");
+        RevCommit rita = affirm("rita", "doc.adoc", 1, 1, a);
+        RevCommit b = commit("doc.adoc", "bob", "Beta claim.", "Gamma claim.", "Alpha claim.");   // alpha moves to the end, the delimiter goes
+
+        StampHistory history = historyOf("doc.adoc");
+        CommitEvent move = history.events().get(2);
+        assertTrue(move.introduced().isEmpty(), "the moved line is not new: " + move.introduced());
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 3)), move.retired(), "only the delimiter retires; it is too common to follow");
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2), new LineId(a.name(), "doc.adoc", 4), new LineId(a.name(), "doc.adoc", 1)),
+                move.manifest(), "alpha keeps the identity it was introduced under, now last");
+        assertEquals(List.of(sha(a), sha(a), sha(a)), attribution("doc.adoc"), "moving is not authoring");
+        StampFile head = stampsOf("doc.adoc");
+        assertEquals(Set.of(3), lines(head.stamps().get(id(rita)).affirmed()), "rita's affirmation moved with the line");
     }
 
     @Test

@@ -68,6 +68,17 @@ import java.util.TreeMap;
  * touch inherit the attribution of the lines they replaced, positionally,
  * and a pure insertion inherits from the line above it.
  *
+ * <p><b>A line keeps its identity across a revision</b>
+ * (IKE-Network/ike-issues#1313). Within each diff hunk, the old and new lines
+ * pair off in order, as Komet's own block editor pairs them: a paired line is
+ * the same line with new text, re-texted under the commit that revised it,
+ * so its history is its versions. What is left over is introduced or
+ * retired. Text removed in one place and added unchanged in another by the
+ * same commit is the same line moved; a line with no letter or digit, a
+ * blank line or a delimiter, is too common to be followed that way. A
+ * revised line still drops its annotations here, since a judgment is about
+ * the text the annotator read; a moved line keeps them.
+ *
  * <p>Annotations are {@code Annotation: <kind> path:from-to@rev#hash}
  * trailers on any first-parent commit, typically an empty signed one: an
  * affirmation, a refutation, or a comment ({@link Annotation}). Each is
@@ -349,6 +360,16 @@ final class HistoryWalkStampExtractor {
             static Delta none() { return new Delta(List.of(), List.of(), List.of()); }
         }
 
+        /** Whether a line's text is distinctive enough to follow as a move: it has a letter or a digit. */
+        private static boolean significant(String line) {
+            for (int i = 0; i < line.length(); i++) {
+                if (Character.isLetterOrDigit(line.charAt(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /** Where a line written by an ignored commit takes its attribution from. */
         private record Source(boolean fromOld, int index) { }
 
@@ -373,7 +394,7 @@ final class HistoryWalkStampExtractor {
                 int replaced = edit.getEndA() - edit.getBeginA();
                 for (int j = 0; j < newCount; j++) {
                     String newText = t.text().getString(edit.getBeginB() + j);
-                    if (!t.ignored() || j >= replaced) {
+                    if (j >= replaced) {
                         LineId id = new LineId(t.commit().name(), t.pathAtCommit(), nextIds.size() + 1);
                         if (!t.ignored()) {
                             nextIntro.add(stamp);
@@ -386,12 +407,16 @@ final class HistoryWalkStampExtractor {
                         nextIds.add(id);
                         introduced.add(new CommitEvent.Line(id, newText));
                     } else {
-                        int source = edit.getBeginA() + j;      // an ignored commit's replacement keeps the line's identity
-                        nextIntro.add(intro.get(source));
-                        nextMarks.add(marks.get(source));
+                        // A replaced line paired in order is the same line with new text: it keeps its
+                        // identity. An ignored commit leaves its authorship and annotations alone; any
+                        // other takes authorship of the text, and the text's annotations go with it.
+                        int source = edit.getBeginA() + j;
+                        boolean changed = !newText.equals(text.getString(source));
+                        nextIntro.add(t.ignored() || !changed ? intro.get(source) : stamp);
+                        nextMarks.add(t.ignored() || !changed ? marks.get(source) : null);
                         nextIds.add(ids.get(source));
                         survivors.add(ids.get(source));
-                        if (!newText.equals(text.getString(source))) {
+                        if (changed) {
                             retexted.add(new CommitEvent.Line(ids.get(source), newText));
                         }
                     }
@@ -403,6 +428,30 @@ final class HistoryWalkStampExtractor {
                 nextMarks.add(marks.get(i));
                 nextIds.add(ids.get(i));
                 survivors.add(ids.get(i));
+            }
+            // A line removed in one place and added unchanged in another is the same line moved.
+            Map<String, java.util.ArrayDeque<Integer>> removedByText = new LinkedHashMap<>();
+            for (int i = 0; i < ids.size(); i++) {
+                String old = text.getString(i);
+                if (!survivors.contains(ids.get(i)) && significant(old)) {
+                    removedByText.computeIfAbsent(old, k -> new java.util.ArrayDeque<>()).add(i);
+                }
+            }
+            if (!removedByText.isEmpty()) {
+                for (java.util.Iterator<CommitEvent.Line> it = introduced.iterator(); it.hasNext(); ) {
+                    CommitEvent.Line line = it.next();
+                    java.util.ArrayDeque<Integer> candidates = removedByText.get(line.text());
+                    if (candidates == null || candidates.isEmpty()) {
+                        continue;
+                    }
+                    int from = candidates.poll();
+                    int at = nextIds.indexOf(line.id());
+                    nextIds.set(at, ids.get(from));
+                    nextIntro.set(at, intro.get(from));
+                    nextMarks.set(at, marks.get(from));
+                    survivors.add(ids.get(from));
+                    it.remove();
+                }
             }
             List<LineId> retired = new ArrayList<>();
             for (LineId old : ids) {
