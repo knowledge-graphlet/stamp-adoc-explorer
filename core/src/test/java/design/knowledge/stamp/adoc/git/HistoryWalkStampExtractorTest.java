@@ -454,6 +454,51 @@ class HistoryWalkStampExtractorTest {
         assertEquals(1, second.retexted().size(), "the sentence is revised, not replaced");
     }
 
+    @Test
+    void aColumnRangeAnnotatesTheSentencesItCoversWhole() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes it, renews", "it while working, and returns it.");
+        // line 1 column 22 to line 2 column 33: the second sentence exactly
+        RevCommit judged = annotateColumns(AnnotationKind.AFFIRMATION, "bob", "doc.adoc", 1, 22, 2, 33, a);
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        CommitEvent.AnnotationEvent affirmed = events.getLast().annotations().getFirst();
+        assertEquals(List.of(new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 2)), affirmed.sentences());
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2)), affirmed.lines(),
+                "the line it holds whole; the first line it shares with the sentence before keeps its own judgments");
+        assertEquals(judged.name(), events.getLast().commit().sha());
+    }
+
+    @Test
+    void aColumnRangeCoveringPartOfASentenceIsRefused() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes it.");
+        annotateColumns(AnnotationKind.AFFIRMATION, "bob", "doc.adoc", 1, 1, 1, 30, a);
+        StampHistory history = historyOf("doc.adoc");
+        assertTrue(history.events().getLast().annotations().isEmpty(), "not applied");
+        assertTrue(history.atHead().problems().stream().anyMatch(p -> p.contains("part of a sentence")), history.atHead().problems().toString());
+    }
+
+    @Test
+    void aSentenceJudgmentSurvivesAReflowButNotARevision() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes it,", "renews it.");
+        annotateColumns(AnnotationKind.AFFIRMATION, "bob", "doc.adoc", 1, 22, 2, 10, a);
+        RevCommit reflow = commit("doc.adoc", "carol", "The lease is a loan.", "A machine takes it, renews it.");
+        CommitEvent.AnnotationEvent later = new CommitEvent.AnnotationEvent(null, 0, AnnotationKind.AFFIRMATION, List.of(), "", "");
+        assertEquals(List.of(), later.sentences());
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        assertFalse(events.getLast().segments().changed(), "the reflow changed no sentence: " + reflow.name());
+        assertEquals(events.get(1).annotations().getFirst().sentences().getFirst(), events.getLast().segments().manifest().get(1),
+                "the judged sentence is still there, under the same identity");
+    }
+
+    private RevCommit annotateColumns(AnnotationKind kind, String author, String file, int from, int fromColumn, int to, int toColumn,
+                                      RevCommit rev) throws Exception {
+        List<String> content;
+        try (GitRepo repo = GitRepo.open(root)) {
+            content = repo.linesAt(rev.name(), Path.of(file));
+        }
+        Annotation a = Annotation.of(kind, LineRange.of(Path.of(file), from, fromColumn, to, toColumn, rev.name(), content));
+        return emptyCommit(author, kind.verb() + " " + file + "\n\n" + a.trailer() + "\n");
+    }
+
     private StampFile stampsOf(String file) throws IOException {
         return historyOf(file).atHead();
     }

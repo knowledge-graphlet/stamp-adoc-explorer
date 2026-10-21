@@ -75,9 +75,17 @@ public record CommitEvent(
      * @param reviewedSha the full SHA of the last commit that changed the file at or before the
      *                    range's anchoring revision: the version the annotator saw
      * @param text        the commit body, without subject and trailers; empty when there is none
+     * @param sentences   the sentences the range covers whole, as the annotator read them, by their current
+     *                    identities (IKE-Network/ike-issues#1313); a sentence revised since is not among them
      */
     public record AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines,
-                                  String reviewedSha, String text) { }
+                                  String reviewedSha, String text, List<SegmentId> sentences) {
+
+        /** An annotation on lines alone. */
+        public AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines, String reviewedSha, String text) {
+            this(annotation, index, kind, lines, reviewedSha, text, List.of());
+        }
+    }
 
     /**
      * A sentence or an inline element with its text at this commit.

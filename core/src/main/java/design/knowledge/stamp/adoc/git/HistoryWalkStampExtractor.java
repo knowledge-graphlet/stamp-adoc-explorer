@@ -175,10 +175,11 @@ final class HistoryWalkStampExtractor {
                 CommitEvent.Segments segments = t != null ? replay.segment(t) : replay.segmentsUnchanged();
                 List<CommitEvent.AnnotationEvent> applied = new ArrayList<>();
                 for (Annot a : annots.getOrDefault(index, List.of())) {
-                    List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems);
+                    List<SegmentId> sentences = new ArrayList<>();
+                    List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems, sentences);
                     if (lines != null) {
                         applied.add(new CommitEvent.AnnotationEvent(a.annotation(), a.index(), a.kind(), lines,
-                                reviewedSha(a.range(), chain, touches), a.text()));
+                                reviewedSha(a.range(), chain, touches), a.text(), sentences));
                     }
                 }
                 events.add(new CommitEvent(commitOf(commit), pathAtCommit, t != null && t.ignored(),
@@ -569,6 +570,26 @@ final class HistoryWalkStampExtractor {
         }
 
         /**
+         * The current sentences reading the given texts, matched in order: the identities an
+         * annotation on those sentences, as the annotator read them, lands on. A sentence revised
+         * since is not among them, since a judgment is about the text the annotator read.
+         */
+        List<SegmentId> sentencesReading(List<String> texts) {
+            List<SegmentId> found = new ArrayList<>();
+            int cursor = 0;
+            for (String text : texts) {
+                for (int i = cursor; i < sentenceTexts.size(); i++) {
+                    if (sentenceTexts.get(i).equals(text)) {
+                        found.add(sentenceIds.get(i));
+                        cursor = i + 1;
+                        break;
+                    }
+                }
+            }
+            return found;
+        }
+
+        /**
          * Attach an annotation by {@code record} to the current lines that lines
          * [from, to] of {@code revText} map to.
          *
@@ -660,7 +681,7 @@ final class HistoryWalkStampExtractor {
 
     /** @return the annotated line identities, or null when the annotation was not applied */
     private List<LineId> applyAnnotation(Replay replay, Annot a, Map<String, Integer> chain, Map<Integer, Touch> touches,
-                                         List<String> problems) throws IOException {
+                                         List<String> problems, List<SegmentId> sentences) throws IOException {
         LineRange range = a.range();
         String where = a.commit().abbreviate(7).name() + " " + range.value();
         ObjectId rev;
@@ -683,12 +704,53 @@ final class HistoryWalkStampExtractor {
             problems.add(where + ": hash does not match the lines at " + range.revision());
             return null;
         }
+        // the sentences the range covers whole, at the revision the annotator read
+        List<String> revLines = lines(revText);
+        List<String> covered = new ArrayList<>();
+        for (Segmenter.Sentence sentence : Segmenter.of(IkeDialectParser.parse(revLines)).sentences()) {
+            int[] first = {sentence.lines().getFirst(), sentence.flow().columnAt(sentence.start()) + 1};
+            int[] last = {sentence.lines().getLast(), sentence.flow().columnAt(sentence.end() - 1) + 1};
+            boolean starts = within(range, first);
+            boolean ends = within(range, last);
+            if (starts && ends) {
+                covered.add(sentence.text());
+            } else if (range.hasColumns() && (starts || ends)) {
+                problems.add(where + ": the range covers part of a sentence; an annotation names whole sentences");
+                return null;
+            }
+        }
         Annotation annotation = a.annotation();
         String annotator = annotation.by() != null
                 ? "author:" + annotation.by().uuid()
                 : "email:" + a.commit().getAuthorIdent().getEmailAddress().toLowerCase(java.util.Locale.ROOT);
+        sentences.addAll(replay.sentencesReading(covered));
+        // a column range lands on the lines it holds whole; the lines it shares with other sentences keep their own judgments
+        int from = range.from();
+        int to = range.to();
+        if (range.hasColumns()) {
+            if (!revLines.get(from - 1).substring(0, range.fromColumn() - 1).isBlank()) {
+                from++;
+            }
+            if (!revLines.get(to - 1).substring(range.toColumn()).isBlank()) {
+                to--;
+            }
+        }
+        if (from > to) {
+            return List.of();
+        }
         return replay.annotate(replay.recordFor(a.commit(), range.file().toString()), a.kind(), annotator,
-                revText, range.from(), range.to());
+                revText, from, to);
+    }
+
+    /** Whether a 1-based line and column lies within a range: its lines, and its columns at either end. */
+    private static boolean within(LineRange range, int[] at) {
+        if (at[0] < range.from() || at[0] > range.to()) {
+            return false;
+        }
+        if (!range.hasColumns()) {
+            return true;
+        }
+        return !(at[0] == range.from() && at[1] < range.fromColumn()) && !(at[0] == range.to() && at[1] > range.toColumn());
     }
 
     /**
