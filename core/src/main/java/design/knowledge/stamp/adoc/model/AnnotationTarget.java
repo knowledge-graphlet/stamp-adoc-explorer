@@ -16,15 +16,17 @@ import java.util.regex.Pattern;
 
 /**
  * What an annotation is about: a line range of a committed document, one
- * version of a graph component, or a whole change set (a STAMP).
+ * version of a graph component, a whole change set (a STAMP), or an earlier
+ * annotation commit (the target of a retraction).
  *
  * <pre>
  * topics/dev/x.adoc:14-22@3f2a91c#a1b2c3              a line range
  * k:uuid=&lt;component&gt;[label]@&lt;stamp-uuid&gt;           one component version
  * k:uuid=&lt;stamp-uuid&gt;[label]                         a change set
+ * @3f2a91c                                            an earlier annotation commit
  * </pre>
  */
-public sealed interface AnnotationTarget permits LineRange, AnnotationTarget.ComponentVersion, AnnotationTarget.ChangeSet {
+public sealed interface AnnotationTarget permits LineRange, AnnotationTarget.ComponentVersion, AnnotationTarget.ChangeSet, AnnotationTarget.Commit {
 
     /** @return the target as it is written in a trailer */
     String value();
@@ -67,12 +69,49 @@ public sealed interface AnnotationTarget permits LineRange, AnnotationTarget.Com
     }
 
     /**
+     * An earlier annotation commit, as a retraction names what it withdraws: every annotation the
+     * commit recorded. The revision is the commit's SHA, abbreviated or full; a commit is immutable,
+     * so no hash is needed. The body of the retraction is why.
+     *
+     * @param revision the annotation commit's SHA, 7 to 40 hex digits
+     */
+    record Commit(String revision) implements AnnotationTarget {
+
+        private static final Pattern FORM = Pattern.compile("@(?<rev>[0-9a-f]{7,40})");
+
+        /** Validates the record. */
+        public Commit {
+            Objects.requireNonNull(revision, "revision");
+            if (!FORM.matcher("@" + revision).matches()) {
+                throw new IllegalArgumentException("a commit target is 7 to 40 lowercase hex digits: " + revision);
+            }
+        }
+
+        @Override
+        public String value() {
+            return "@" + revision;
+        }
+
+        /** @return the revision's first seven digits */
+        public String shortRevision() {
+            return revision.substring(0, 7);
+        }
+    }
+
+    /**
      * @param text a target as written in a trailer
      * @return the target
      * @throws IllegalArgumentException if the text is no target form
      */
     static AnnotationTarget parse(String text) {
         String t = text.strip();
+        if (t.startsWith("@")) {
+            Matcher m = Commit.FORM.matcher(t);
+            if (!m.matches()) {
+                throw new IllegalArgumentException("not a commit target: " + text);
+            }
+            return new Commit(m.group("rev"));
+        }
         if (t.startsWith("k:")) {
             Matcher m = Pattern.compile("(?<ref>" + KonceptRef.REGEX + ")(?:@(?<stamp>[0-9a-fA-F-]{36}))?").matcher(t);
             if (!m.matches()) {

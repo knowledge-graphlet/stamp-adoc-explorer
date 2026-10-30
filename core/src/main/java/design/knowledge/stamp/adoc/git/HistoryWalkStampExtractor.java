@@ -14,6 +14,7 @@ import design.knowledge.stamp.adoc.dialect.Segmenter;
 import design.knowledge.stamp.adoc.dialect.TextPairing;
 import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.LineRange;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.LineId;
@@ -101,8 +102,12 @@ import java.util.TreeMap;
  * other line: a later edit of an annotated line drops its annotations, an
  * edit elsewhere leaves them alone. A later judgment by the same annotator
  * on the same line supersedes an earlier one, so affirming and then
- * refuting reads as refuted. Trailers about other files, or about graph
- * components, are not this walk's concern and are skipped.
+ * refuting reads as refuted. A retraction ({@code Annotation: <kind> @<sha>})
+ * withdraws every annotation an earlier commit recorded on this file: their
+ * marks leave the lines, and nothing the retracted annotation had superseded
+ * comes back, since a retraction takes back only its target. Trailers about
+ * other files, or about graph components, are not this walk's concern and are
+ * skipped; so is a retraction of a commit that annotated only other files.
  *
  * <p>v1 attributes along the first-parent chain: a merge that changes the
  * file is one STAMP of its own. Squash-merged feature work therefore lands
@@ -125,8 +130,13 @@ final class HistoryWalkStampExtractor {
     /** One commit that changed the file, with the file's path and content as of that commit. */
     private record Touch(RevCommit commit, String pathAtCommit, List<Edit> edits, RawText text, boolean ignored) { }
 
-    /** One annotation trailer on one commit, with its position among the commit's trailers and the commit body. */
-    private record Annot(RevCommit commit, int index, Annotation annotation, AnnotationKind kind, LineRange range, String text) { }
+    /**
+     * One annotation trailer on one commit, with its position among the commit's trailers and the
+     * commit body: a line range of this file, or, for a retraction, the annotations of this file the
+     * retracted commit recorded ({@code range} is then null).
+     */
+    private record Annot(RevCommit commit, int index, Annotation annotation, AnnotationKind kind, LineRange range, String text,
+                         List<CommitEvent.AnnotationRef> retracts) { }
 
     /**
      * Compute the {@link StampHistory} for the configured file.
@@ -179,7 +189,8 @@ final class HistoryWalkStampExtractor {
                     List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems, sentences);
                     if (lines != null) {
                         applied.add(new CommitEvent.AnnotationEvent(a.annotation(), a.index(), a.kind(), lines,
-                                reviewedSha(a.range(), chain, touches), a.text(), sentences));
+                                a.range() == null ? a.retracts().getFirst().commitSha() : reviewedSha(a.range(), chain, touches),
+                                a.text(), sentences, a.retracts()));
                     }
                 }
                 events.add(new CommitEvent(commitOf(commit), pathAtCommit, t != null && t.ignored(),
@@ -283,20 +294,88 @@ final class HistoryWalkStampExtractor {
                         problems.add(commit.abbreviate(7).name() + ": " + e.getMessage());
                         continue;
                     }
+                    AnnotationKind kind = parsed.knownKind().orElse(null);
+                    if (parsed.target() instanceof AnnotationTarget.Commit retracted) {
+                        String where = commit.abbreviate(7).name() + " " + parsed.value();
+                        if (kind != AnnotationKind.RETRACTION) {
+                            if (kind == null) {
+                                problems.add(where + ": unknown annotation kind " + parsed.kind());
+                            } else {
+                                problems.add(where + ": only a retraction names a commit");
+                            }
+                            continue;
+                        }
+                        List<CommitEvent.AnnotationRef> retracts = annotationsOf(retracted, names, problems, where);
+                        if (retracts != null && !retracts.isEmpty()) {
+                            annots.computeIfAbsent(index, k -> new ArrayList<>())
+                                    .add(new Annot(commit, position, parsed, kind, null, bodyOf(commit), retracts));
+                        }
+                        continue;                                // about another file's annotations, or reported
+                    }
                     if (!(parsed.target() instanceof LineRange range) || !names.contains(range.gitPath())) {
                         continue;                                // about another file, or about the graph
                     }
-                    AnnotationKind kind = parsed.knownKind().orElse(null);
                     if (kind == null) {
                         problems.add(commit.abbreviate(7).name() + " " + parsed.value() + ": unknown annotation kind " + parsed.kind());
                         continue;
                     }
+                    if (kind == AnnotationKind.RETRACTION) {
+                        problems.add(commit.abbreviate(7).name() + " " + parsed.value() + ": a retraction names a commit, not lines");
+                        continue;
+                    }
                     annots.computeIfAbsent(index, k -> new ArrayList<>())
-                            .add(new Annot(commit, position, parsed, kind, range, bodyOf(commit)));
+                            .add(new Annot(commit, position, parsed, kind, range, bodyOf(commit), List.of()));
                 }
                 index++;
             }
         }
+    }
+
+    /**
+     * The annotations of this file an earlier commit recorded, as a retraction's targets: one
+     * reference per {@code Annotation:} trailer whose line range names one of the file's paths.
+     *
+     * @return the references; empty when the commit annotated only other files; null, with a
+     *         problem reported, when the revision is unknown or the commit recorded no annotation
+     */
+    private List<CommitEvent.AnnotationRef> annotationsOf(AnnotationTarget.Commit retracted, Set<String> names, List<String> problems,
+                                                          String where) {
+        ObjectId id;
+        try {
+            id = repository.resolve(retracted.revision());
+        } catch (IOException | RuntimeException e) {
+            problems.add(where + ": revision " + retracted.revision() + " " + e.getMessage());
+            return null;
+        }
+        if (id == null) {
+            problems.add(where + ": unknown revision " + retracted.revision());
+            return null;
+        }
+        RevCommit target;
+        try (RevWalk walk = new RevWalk(repository)) {
+            target = walk.parseCommit(id);
+        } catch (IOException e) {
+            problems.add(where + ": " + retracted.revision() + " is not a commit");
+            return null;
+        }
+        List<String> values = target.getFooterLines(Annotation.TRAILER);
+        if (values.isEmpty()) {
+            problems.add(where + ": " + retracted.shortRevision() + " recorded no annotation");
+            return null;
+        }
+        List<CommitEvent.AnnotationRef> refs = new ArrayList<>();
+        for (int position = 0; position < values.size(); position++) {
+            Annotation parsed;
+            try {
+                parsed = Annotation.parse(values.get(position));
+            } catch (IllegalArgumentException e) {
+                continue;                                        // reported where that commit is walked
+            }
+            if (parsed.target() instanceof LineRange range && names.contains(range.gitPath())) {
+                refs.add(new CommitEvent.AnnotationRef(target.name(), position, parsed.id()));
+            }
+        }
+        return refs;
     }
 
     /**
@@ -590,6 +669,27 @@ final class HistoryWalkStampExtractor {
         }
 
         /**
+         * Withdraws every mark an earlier commit made: a retraction. Nothing the retracted
+         * judgments had superseded comes back.
+         *
+         * @return the identities of the lines that lost a mark, in order
+         */
+        List<LineId> retract(String commitSha) {
+            List<LineId> affected = new ArrayList<>();
+            for (int line = 0; line < marks.size(); line++) {
+                List<Mark> on = marks.get(line);
+                if (on == null || on.stream().noneMatch(m -> m.record().commitSha().equals(commitSha))) {
+                    continue;
+                }
+                List<Mark> kept = new ArrayList<>(on);
+                kept.removeIf(m -> m.record().commitSha().equals(commitSha));
+                marks.set(line, kept.isEmpty() ? null : kept);
+                affected.add(ids.get(line));
+            }
+            return affected;
+        }
+
+        /**
          * Attach an annotation by {@code record} to the current lines that lines
          * [from, to] of {@code revText} map to.
          *
@@ -646,6 +746,7 @@ final class HistoryWalkStampExtractor {
                                 case AFFIRMATION -> a.affirmed().add(i + 1);
                                 case REFUTATION -> a.refuted().add(i + 1);
                                 case COMMENT -> a.commented().add(i + 1);
+                                case RETRACTION -> { }           // a retraction leaves no mark of its own
                             }
                         }
                     }
@@ -682,6 +783,17 @@ final class HistoryWalkStampExtractor {
     /** @return the annotated line identities, or null when the annotation was not applied */
     private List<LineId> applyAnnotation(Replay replay, Annot a, Map<String, Integer> chain, Map<Integer, Touch> touches,
                                          List<String> problems, List<SegmentId> sentences) throws IOException {
+        if (a.kind() == AnnotationKind.RETRACTION) {
+            String retracted = a.retracts().getFirst().commitSha();
+            Integer at = chain.get(retracted);
+            Integer own = chain.get(a.commit().name());
+            if (at == null || own == null || at <= own) {
+                problems.add(a.commit().abbreviate(7).name() + " " + a.annotation().value() + ": "
+                        + retracted.substring(0, 7) + " is not an earlier commit on HEAD's first-parent chain");
+                return null;
+            }
+            return replay.retract(retracted);
+        }
         LineRange range = a.range();
         String where = a.commit().abbreviate(7).name() + " " + range.value();
         ObjectId rev;

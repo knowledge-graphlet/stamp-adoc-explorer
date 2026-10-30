@@ -235,6 +235,7 @@ final class StampGutter implements ActiveAnnotationGutter {
                     case AFFIRMATION -> "✓ Affirmed";
                     case REFUTATION -> "✗ Refuted";
                     case COMMENT -> "… Commented on";
+                    case RETRACTION -> "↶ Retracted";          // never a note of its own: a retraction leaves no mark
                 };
                 StampRecord a = n.stamp();
                 html.append("<br><b>").append(label).append("</b> by ").append(escape(a.author().name()))
@@ -286,6 +287,9 @@ final class StampGutter implements ActiveAnnotationGutter {
                 }
             });
             for (AnnotationKind kind : AnnotationKind.values()) {
+                if (kind == AnnotationKind.RETRACTION) {
+                    continue;                                    // a retraction names a commit, not lines
+                }
                 actions.add(new AnAction(kind.verb() + " the " + r.introduced().getCardinality() + " Lines of STAMP " + shortSha(r) + "…") {
                     @Override
                     public void actionPerformed(@NotNull AnActionEvent e) {

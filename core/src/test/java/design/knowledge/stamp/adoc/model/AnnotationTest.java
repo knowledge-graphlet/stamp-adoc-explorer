@@ -37,6 +37,22 @@ class AnnotationTest {
     }
 
     @Test
+    void aRetractionNamesAnEarlierAnnotationCommit() {
+        Annotation a = Annotation.of(AnnotationKind.RETRACTION, new AnnotationTarget.Commit("3f2a91c0ffee0ffee0ffee0ffee0ffee0ffee0ff"));
+
+        assertEquals("Annotation: " + AnnotationKind.RETRACTION.ref() + " @3f2a91c0ffee0ffee0ffee0ffee0ffee0ffee0ff", a.trailer());
+        Annotation parsed = Annotation.parse(a.value());
+        assertEquals(a, parsed);
+        assertEquals(AnnotationKind.RETRACTION, parsed.knownKind().orElseThrow());
+        assertFalse(AnnotationKind.RETRACTION.judgment(), "a retraction is not a stance; it withdraws one");
+        assertEquals("3f2a91c", parsed.retractedCommit().orElseThrow().shortRevision());
+        assertTrue(parsed.lineRange().isEmpty());
+        assertInstanceOf(AnnotationTarget.Commit.class, AnnotationTarget.parse(" @3f2a91c "));
+        assertThrows(IllegalArgumentException.class, () -> AnnotationTarget.parse("@3f2a9"), "too short to name a commit");
+        assertThrows(IllegalArgumentException.class, () -> AnnotationTarget.parse("@3F2A91C"), "lowercase, as git prints it");
+    }
+
+    @Test
     void lineRangeCarriesPathRangeRevisionAndHash() {
         LineRange r = LineRange.of(Path.of("topics/dev/x.adoc"), 3, 5, "3f2a91c0ffee0ffee0ffee", CONTENT);
 

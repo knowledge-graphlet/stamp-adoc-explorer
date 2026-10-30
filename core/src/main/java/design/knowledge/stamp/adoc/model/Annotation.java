@@ -19,12 +19,14 @@ import java.util.regex.Pattern;
 
 /**
  * One {@code Annotation:} trailer: an affirmation, a refutation, or a comment
- * about a target, recorded without touching it (ike-lab-documents topic
- * {@code dev-annotation-trailer}, IKE-Network/ike-issues#1300).
+ * about a target, recorded without touching it, or a retraction of an earlier
+ * annotation commit (ike-lab-documents topic {@code dev-annotation-trailer},
+ * IKE-Network/ike-issues#1300).
  *
  * <pre>
  * Annotation: &lt;kind&gt; &lt;target&gt; [by &lt;author&gt;] [at &lt;instant&gt;] [id &lt;uuid&gt;]
  * Annotation: k:uuid=6111dc03-…[Affirmation] topics/dev/x.adoc:14-22@3f2a91c#a1b2c3
+ * Annotation: k:uuid=…[Retraction] @3f2a91c
  * </pre>
  *
  * <p>The kind and the author are Koncept references by PublicId. {@code by},
@@ -103,6 +105,11 @@ public record Annotation(KonceptRef kind, AnnotationTarget target, KonceptRef by
     /** @return the line range, when the target is one */
     public Optional<LineRange> lineRange() {
         return target instanceof LineRange r ? Optional.of(r) : Optional.empty();
+    }
+
+    /** @return the annotation commit this annotation retracts, when the target is one */
+    public Optional<AnnotationTarget.Commit> retractedCommit() {
+        return target instanceof AnnotationTarget.Commit c ? Optional.of(c) : Optional.empty();
     }
 
     /** @return the trailer value, {@code <kind> <target> [by …] [at …] [id …]} */

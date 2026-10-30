@@ -77,15 +77,36 @@ public record CommitEvent(
      * @param text        the commit body, without subject and trailers; empty when there is none
      * @param sentences   the sentences the range covers whole, as the annotator read them, by their current
      *                    identities (IKE-Network/ike-issues#1313); a sentence revised since is not among them
+     * @param retracts    for a {@link AnnotationKind#RETRACTION}, the annotations of this file the retracted commit
+     *                    recorded, which are no longer in force; {@code lines} are then the lines that lost them;
+     *                    empty for every other kind
      */
     public record AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines,
-                                  String reviewedSha, String text, List<SegmentId> sentences) {
+                                  String reviewedSha, String text, List<SegmentId> sentences, List<AnnotationRef> retracts) {
 
         /** An annotation on lines alone. */
         public AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines, String reviewedSha, String text) {
-            this(annotation, index, kind, lines, reviewedSha, text, List.of());
+            this(annotation, index, kind, lines, reviewedSha, text, List.of(), List.of());
+        }
+
+        /** An annotation on lines and the sentences they cover whole. */
+        public AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines, String reviewedSha, String text,
+                               List<SegmentId> sentences) {
+            this(annotation, index, kind, lines, reviewedSha, text, sentences, List.of());
         }
     }
+
+    /**
+     * Names one annotation as git names it: the commit that recorded it and the trailer's position
+     * among that commit's {@code Annotation:} trailers, or its own id when the trailer carried one;
+     * the same two things that name an annotation when it is walked, so a retraction's target resolves
+     * to the very semantic the annotation became.
+     *
+     * @param commitSha the full SHA of the commit that recorded the annotation
+     * @param index     the trailer's 0-based position among the commit's annotation trailers
+     * @param id        the annotation's own PublicId when the trailer carried {@code id}, else null
+     */
+    public record AnnotationRef(String commitSha, int index, java.util.UUID id) { }
 
     /**
      * A sentence or an inline element with its text at this commit.

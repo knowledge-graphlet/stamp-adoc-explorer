@@ -33,7 +33,16 @@ public enum AnnotationKind {
     AFFIRMATION("Affirmation", "Affirm", true),
 
     /** The annotator has reviewed the content and disputes it. */
-    REFUTATION("Refutation", "Refute", true);
+    REFUTATION("Refutation", "Refute", true),
+
+    /**
+     * The annotator withdraws an earlier annotation commit of theirs: every annotation that commit
+     * recorded is no longer in force. The target is the commit ({@link AnnotationTarget.Commit}), the
+     * unit the person signed and the one its body applies to. A retraction is not a stance: it takes
+     * nothing back but its target, so a judgment the target had superseded stays superseded, and a
+     * later annotation by the same person stands.
+     */
+    RETRACTION("Retraction", "Retract", false);
 
     /** The IKE starter set's knowledge-set namespace. */
     public static final UUID STARTER_SET_NAMESPACE = Namespace.STARTER_SET;
@@ -60,7 +69,7 @@ public enum AnnotationKind {
         return label;
     }
 
-    /** @return the imperative a commit subject opens with, {@code Affirm}, {@code Refute}, {@code Comment on} */
+    /** @return the imperative a commit subject opens with, {@code Affirm}, {@code Refute}, {@code Comment on}, {@code Retract} */
     public String verb() {
         return verb;
     }

@@ -11,6 +11,7 @@ package design.knowledge.stamp.adoc.git;
 
 import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.CommitEvent;
 import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.SegmentId;
@@ -212,6 +213,61 @@ class HistoryWalkStampExtractorTest {
         CommitEvent.AnnotationEvent refutation = historyOf("doc.adoc").events().stream()
                 .filter(e -> e.commit().sha().equals(refuted.name())).findFirst().orElseThrow().annotations().get(0);
         assertEquals("Two is overstated.", refutation.text());
+    }
+
+    /**
+     * A retraction withdraws every annotation its target commit recorded, and nothing else: an
+     * unrelated affirmation stands, a later annotation by the same person stands, and a judgment the
+     * retracted one had superseded does not come back.
+     */
+    @Test
+    void aRetractionWithdrawsItsTargetAndNothingElse() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two", "three");
+        RevCommit ritaAffirms = affirm("rita", "doc.adoc", 1, 2, a);
+        RevCommit ritaRefutes = annotate(AnnotationKind.REFUTATION, "rita", "doc.adoc", 2, 2, a, "Two is overstated.");
+        RevCommit samAffirms = affirm("sam", "doc.adoc", 1, 3, a);
+        RevCommit ritaAffirmsThree = affirm("rita", "doc.adoc", 3, 3, a);
+        RevCommit retraction = retract("rita", ritaRefutes, "Two reads right after all.");
+
+        StampFile head = stampsOf("doc.adoc");
+        StampHistory history = historyOf("doc.adoc");
+
+        assertTrue(head.problems().isEmpty(), head.problems().toString());
+        assertFalse(head.stamps().containsKey(id(ritaRefutes)), "the retracted refutation holds no line");
+        assertFalse(head.stamps().containsKey(id(retraction)), "a retraction leaves no mark of its own");
+        assertEquals(Set.of(1), lines(head.stamps().get(id(ritaAffirms)).affirmed()),
+                "the affirmation of line 2 the refutation superseded does not come back");
+        assertEquals(Set.of(1, 2, 3), lines(head.stamps().get(id(samAffirms)).affirmed()), "an unrelated affirmation stands");
+        assertEquals(Set.of(3), lines(head.stamps().get(id(ritaAffirmsThree)).affirmed()), "a later annotation by the same person stands");
+        CommitEvent event = history.events().stream().filter(e -> e.commit().sha().equals(retraction.name())).findFirst().orElseThrow();
+        CommitEvent.AnnotationEvent retracted = event.annotations().get(0);
+        assertEquals(AnnotationKind.RETRACTION, retracted.kind());
+        assertEquals(List.of(new CommitEvent.AnnotationRef(ritaRefutes.name(), 0, null)), retracted.retracts(),
+                "the event names the annotation git named: the commit and the trailer's position");
+        assertEquals(List.of(new LineId(a.name(), "doc.adoc", 2)), retracted.lines(), "the line that lost the mark");
+        assertEquals("Two reads right after all.", retracted.text());
+        assertEquals(ritaRefutes.name(), retracted.reviewedSha());
+    }
+
+    @Test
+    void aRetractionOfACommitThatAnnotatedAnotherFileOrNothingIsSkippedOrReported() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "one", "two");
+        RevCommit o = commit("other.adoc", "olga", "elsewhere");
+        RevCommit olgaAffirms = affirm("rita", "other.adoc", 1, 1, o);
+        retract("rita", olgaAffirms, "");
+        retract("rita", a, "");
+        emptyCommit("rita", "Retract nothing\n\nAnnotation: " + AnnotationKind.RETRACTION.ref() + " @0000000deadbeef\n");
+        emptyCommit("rita", "Affirm a commit\n\nAnnotation: " + AnnotationKind.AFFIRMATION.ref() + " @" + a.name() + "\n");
+
+        StampHistory history = historyOf("doc.adoc");
+
+        assertEquals(List.of(sha(a)), history.events().stream().map(e -> e.commit().sha().substring(0, 7)).toList(),
+                "a retraction about another file's annotation is not this walk's concern");
+        List<String> problems = history.atHead().problems();
+        assertEquals(3, problems.size(), problems.toString());
+        assertTrue(problems.get(0).contains("only a retraction names a commit"), problems.toString());
+        assertTrue(problems.get(1).contains("unknown revision"), problems.toString());
+        assertTrue(problems.get(2).contains("recorded no annotation"), problems.toString());
     }
 
     @Test
@@ -553,6 +609,12 @@ class HistoryWalkStampExtractorTest {
         Annotation a = Annotation.of(kind, LineRange.of(Path.of(file), from, to, rev.name(), content));
         return emptyCommit(author, kind.verb() + " " + file + " " + from + "-" + to + "\n\n" + (text.isEmpty() ? "" : text + "\n\n")
                 + a.trailer() + "\n");
+    }
+
+    /** An empty commit by {@code author} retracting the annotation commit {@code target}. */
+    private RevCommit retract(String author, RevCommit target, String text) throws Exception {
+        Annotation a = Annotation.of(AnnotationKind.RETRACTION, new AnnotationTarget.Commit(target.name()));
+        return emptyCommit(author, "Retract " + sha(target) + "\n\n" + (text.isEmpty() ? "" : text + "\n\n") + a.trailer() + "\n");
     }
 
     private RevCommit emptyCommit(String author, String message) throws Exception {

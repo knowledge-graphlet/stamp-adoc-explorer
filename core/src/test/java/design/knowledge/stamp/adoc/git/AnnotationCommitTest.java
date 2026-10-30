@@ -56,6 +56,8 @@ class AnnotationCommitTest {
         assertEquals("Refute x.adoc 1-1", AnnotationCommit.subject(List.of(Annotation.of(AnnotationKind.REFUTATION, r))));
         assertEquals("Annotate x.adoc 1-1, 1-1", AnnotationCommit.subject(List.of(
                 Annotation.of(AnnotationKind.REFUTATION, r), Annotation.of(AnnotationKind.COMMENT, r))));
+        assertEquals("Retract 3f2a91c", AnnotationCommit.subject(List.of(
+                Annotation.of(AnnotationKind.RETRACTION, new design.knowledge.stamp.adoc.model.AnnotationTarget.Commit("3f2a91c0ffee")))));
     }
 
     @Test

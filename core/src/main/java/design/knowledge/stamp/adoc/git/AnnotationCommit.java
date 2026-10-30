@@ -11,6 +11,7 @@ package design.knowledge.stamp.adoc.git;
 
 import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.LineRange;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.Status;
@@ -25,7 +26,9 @@ import java.util.stream.Collectors;
 
 /**
  * Writes the empty commit that records annotations: the annotation text as
- * the body, one {@code Annotation:} trailer per target, signed by default.
+ * the body, one {@code Annotation:} trailer per target, signed by default. A
+ * retraction is written the same way, its one trailer naming the commit it
+ * withdraws and its body saying why.
  * The commit is made by the {@code git} command line rather than JGit, so the
  * signing the user has configured — GPG, SSH, a password manager's agent —
  * applies exactly as it does to every other commit they sign. A staged index
@@ -50,14 +53,19 @@ public final class AnnotationCommit {
     /**
      * The commit subject: the kind's verb when every annotation shares one
      * known kind, else {@code Annotate}, then the file and its ranges when every
-     * target is a line range of one file.
+     * target is a line range of one file, or the retracted commits when every
+     * target is a commit.
      *
      * @param annotations one or more annotations
-     * @return the subject, e.g. {@code Affirm topics/x.adoc 3-5, 9-9}
+     * @return the subject, e.g. {@code Affirm topics/x.adoc 3-5, 9-9} or {@code Retract 3f2a91c}
      */
     public static String subject(List<Annotation> annotations) {
         List<Optional<AnnotationKind>> kinds = annotations.stream().map(Annotation::knownKind).distinct().toList();
         String verb = kinds.size() == 1 && kinds.get(0).isPresent() ? kinds.get(0).get().verb() : "Annotate";
+        List<AnnotationTarget.Commit> commits = annotations.stream().flatMap(a -> a.retractedCommit().stream()).toList();
+        if (commits.size() == annotations.size()) {
+            return verb + " " + commits.stream().map(AnnotationTarget.Commit::shortRevision).collect(Collectors.joining(", "));
+        }
         List<LineRange> ranges = annotations.stream().flatMap(a -> a.lineRange().stream()).toList();
         if (ranges.size() == annotations.size() && ranges.stream().map(LineRange::gitPath).distinct().count() == 1) {
             return verb + " " + ranges.get(0).gitPath() + " "
