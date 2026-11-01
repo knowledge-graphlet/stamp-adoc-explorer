@@ -37,6 +37,31 @@ class LineRangeTest {
     }
 
     @Test
+    void fragmentsRoundTripAndHashFragmentByFragment() {
+        List<String> content = List.of("No nausea, vomiting, or diarrhea.");
+        LineRange range = LineRange.of(Path.of("doc.adoc"), List.of(new LineRange.Fragment(1, 1, 1, 2), new LineRange.Fragment(1, 12, 1, 19)),
+                "abcdef0123", content);
+        assertEquals("doc.adoc:1.1-1.2+1.12-1.19@abcdef0#" + range.hash(), range.value());
+        assertEquals(range, LineRange.parse(range.value()));
+        assertEquals("No\nvomiting", range.selected(content));
+        assertEquals(LineRange.hashOf(List.of("No", "vomiting")), range.hash());
+        assertTrue(range.matches(content));
+        assertEquals(1, range.lineCount());
+        LineRange one = LineRange.of(Path.of("doc.adoc"), List.of(new LineRange.Fragment(1, 1, 2, 17)), "abcdef0123", CONTENT);
+        assertEquals(LineRange.of(Path.of("doc.adoc"), 1, 1, 2, 17, "abcdef0123", CONTENT), one, "one fragment hashes as a column range always did");
+    }
+
+    @Test
+    void fragmentsRunInOrderWithoutOverlapping() {
+        List<String> content = List.of("No nausea, vomiting, or diarrhea.");
+        assertThrows(IllegalArgumentException.class, () -> LineRange.of(Path.of("a"),
+                List.of(new LineRange.Fragment(1, 12, 1, 19), new LineRange.Fragment(1, 1, 1, 2)), "abcdef0", content));
+        assertThrows(IllegalArgumentException.class, () -> LineRange.of(Path.of("a"),
+                List.of(new LineRange.Fragment(1, 1, 1, 5), new LineRange.Fragment(1, 5, 1, 9)), "abcdef0", content));
+        assertThrows(IllegalArgumentException.class, () -> LineRange.parse("a:1-1+1.4-1.9@abcdef0#000000"), "fragments need columns");
+    }
+
+    @Test
     void aLineRangeIsUnchanged() {
         LineRange range = LineRange.of(Path.of("doc.adoc"), 1, 2, "abcdef0123", CONTENT);
         assertFalse(range.hasColumns());

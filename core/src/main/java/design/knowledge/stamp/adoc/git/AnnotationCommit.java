@@ -62,6 +62,8 @@ public final class AnnotationCommit {
     public static String subject(List<Annotation> annotations) {
         List<Optional<AnnotationKind>> kinds = annotations.stream().map(Annotation::knownKind).distinct().toList();
         String verb = kinds.size() == 1 && kinds.get(0).isPresent() ? kinds.get(0).get().verb() : "Annotate";
+        List<String> meanings = annotations.stream().map(a -> a.kind().label()).distinct().toList();
+        String as = kinds.size() == 1 && kinds.get(0).isEmpty() && meanings.size() == 1 ? " as " + meanings.get(0) : "";
         List<AnnotationTarget.Commit> commits = annotations.stream().flatMap(a -> a.retractedCommit().stream()).toList();
         if (commits.size() == annotations.size()) {
             return verb + " " + commits.stream().map(AnnotationTarget.Commit::shortRevision).collect(Collectors.joining(", "));
@@ -69,9 +71,10 @@ public final class AnnotationCommit {
         List<LineRange> ranges = annotations.stream().flatMap(a -> a.lineRange().stream()).toList();
         if (ranges.size() == annotations.size() && ranges.stream().map(LineRange::gitPath).distinct().count() == 1) {
             return verb + " " + ranges.get(0).gitPath() + " "
-                    + ranges.stream().map(r -> r.from() + "-" + r.to()).collect(Collectors.joining(", "));
+                    + ranges.stream().map(r -> r.from() + "-" + (r.further().isEmpty() ? r.to() : r.further().getLast().to()))
+                            .collect(Collectors.joining(", ")) + as;
         }
-        return verb + " " + annotations.size() + " target(s)";
+        return verb + " " + annotations.size() + " target(s)" + as;
     }
 
     /**

@@ -9,6 +9,7 @@
  */
 package design.knowledge.stamp.adoc.git;
 
+import design.knowledge.stamp.adoc.dialect.Flow;
 import design.knowledge.stamp.adoc.dialect.IkeDialectParser;
 import design.knowledge.stamp.adoc.dialect.Segmenter;
 import design.knowledge.stamp.adoc.dialect.TextPairing;
@@ -135,7 +136,7 @@ final class HistoryWalkStampExtractor {
      * commit body: a line range of this file, or, for a retraction, the annotations of this file the
      * retracted commit recorded ({@code range} is then null).
      */
-    private record Annot(RevCommit commit, int index, Annotation annotation, AnnotationKind kind, LineRange range, String text,
+    private record Annot(RevCommit commit, int index, Annotation annotation, AnnotationKind kind, LineRange range, String text,   // kind null: a meaning the engine does not know
                          List<CommitEvent.AnnotationRef> retracts) { }
 
     /**
@@ -185,12 +186,12 @@ final class HistoryWalkStampExtractor {
                 CommitEvent.Segments segments = t != null ? replay.segment(t) : replay.segmentsUnchanged();
                 List<CommitEvent.AnnotationEvent> applied = new ArrayList<>();
                 for (Annot a : annots.getOrDefault(index, List.of())) {
-                    List<SegmentId> sentences = new ArrayList<>();
-                    List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems, sentences);
+                    List<CommitEvent.SentenceFragment> fragments = new ArrayList<>();
+                    List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems, fragments);
                     if (lines != null) {
                         applied.add(new CommitEvent.AnnotationEvent(a.annotation(), a.index(), a.kind(), lines,
                                 a.range() == null ? a.retracts().getFirst().commitSha() : reviewedSha(a.range(), chain, touches),
-                                a.text(), sentences, a.retracts()));
+                                a.text(), fragments, a.retracts()));
                     }
                 }
                 events.add(new CommitEvent(commitOf(commit), pathAtCommit, t != null && t.ignored(),
@@ -315,10 +316,7 @@ final class HistoryWalkStampExtractor {
                     if (!(parsed.target() instanceof LineRange range) || !names.contains(range.gitPath())) {
                         continue;                                // about another file, or about the graph
                     }
-                    if (kind == null) {
-                        problems.add(commit.abbreviate(7).name() + " " + parsed.value() + ": unknown annotation kind " + parsed.kind());
-                        continue;
-                    }
+                    // a meaning the engine does not know is stored by its concept and accumulates as a comment does (decision 9, revised)
                     if (kind == AnnotationKind.RETRACTION) {
                         problems.add(commit.abbreviate(7).name() + " " + parsed.value() + ": a retraction names a commit, not lines");
                         continue;
@@ -649,21 +647,24 @@ final class HistoryWalkStampExtractor {
         }
 
         /**
-         * The current sentences reading the given texts, matched in order: the identities an
+         * The current sentence reading each given text, matched in order: the identities an
          * annotation on those sentences, as the annotator read them, lands on. A sentence revised
-         * since is not among them, since a judgment is about the text the annotator read.
+         * since is null, since a judgment is about the text the annotator read; the cursor moves
+         * only past a sentence found, so identical texts pair in order.
          */
-        List<SegmentId> sentencesReading(List<String> texts) {
+        List<SegmentId> sentencesReadingEach(List<String> texts) {
             List<SegmentId> found = new ArrayList<>();
             int cursor = 0;
             for (String text : texts) {
+                SegmentId id = null;
                 for (int i = cursor; i < sentenceTexts.size(); i++) {
                     if (sentenceTexts.get(i).equals(text)) {
-                        found.add(sentenceIds.get(i));
+                        id = sentenceIds.get(i);
                         cursor = i + 1;
                         break;
                     }
                 }
+                found.add(id);
             }
             return found;
         }
@@ -706,8 +707,8 @@ final class HistoryWalkStampExtractor {
                 int current = map[line];
                 if (current >= 0) {
                     List<Mark> on = marks.get(current) == null ? new ArrayList<>(2) : new ArrayList<>(marks.get(current));
-                    if (kind.judgment()) {                       // a later stance by the same annotator replaces the earlier one
-                        on.removeIf(m -> m.kind().judgment() && m.annotator().equals(annotator));
+                    if (kind != null && kind.judgment()) {       // a later stance by the same annotator replaces the earlier one
+                        on.removeIf(m -> m.kind() != null && m.kind().judgment() && m.annotator().equals(annotator));
                     }
                     if (!on.contains(mark)) {
                         on.add(mark);
@@ -741,6 +742,9 @@ final class HistoryWalkStampExtractor {
                     List<Mark> on = step.marks().get(i);
                     if (on != null) {
                         for (Mark m : on) {
+                            if (m.kind() == null) {
+                                continue;                        // another meaning has no line bitmap; its annotation event carries it
+                            }
                             StampRecord a = stamps.computeIfAbsent(m.record().id(), id -> fresh(m.record()));
                             switch (m.kind()) {
                                 case AFFIRMATION -> a.affirmed().add(i + 1);
@@ -782,7 +786,7 @@ final class HistoryWalkStampExtractor {
 
     /** @return the annotated line identities, or null when the annotation was not applied */
     private List<LineId> applyAnnotation(Replay replay, Annot a, Map<String, Integer> chain, Map<Integer, Touch> touches,
-                                         List<String> problems, List<SegmentId> sentences) throws IOException {
+                                         List<String> problems, List<CommitEvent.SentenceFragment> fragments) throws IOException {
         if (a.kind() == AnnotationKind.RETRACTION) {
             String retracted = a.retracts().getFirst().commitSha();
             Integer at = chain.get(retracted);
@@ -816,42 +820,97 @@ final class HistoryWalkStampExtractor {
             problems.add(where + ": hash does not match the lines at " + range.revision());
             return null;
         }
-        // the sentences the range covers whole, at the revision the annotator read
+        // the sentences the range covers, whole or in part, at the revision the annotator read
         List<String> revLines = lines(revText);
-        List<String> covered = new ArrayList<>();
+        List<Segmenter.Sentence> touched = new ArrayList<>();
+        List<int[]> pieces = new ArrayList<>();                 // index into touched, first column, end column; -1 for whole
         for (Segmenter.Sentence sentence : Segmenter.of(IkeDialectParser.parse(revLines)).sentences()) {
-            int[] first = {sentence.lines().getFirst(), sentence.flow().columnAt(sentence.start()) + 1};
-            int[] last = {sentence.lines().getLast(), sentence.flow().columnAt(sentence.end() - 1) + 1};
-            boolean starts = within(range, first);
-            boolean ends = within(range, last);
-            if (starts && ends) {
-                covered.add(sentence.text());
-            } else if (range.hasColumns() && (starts || ends)) {
-                problems.add(where + ": the range covers part of a sentence; an annotation names whole sentences");
-                return null;
+            if (!range.hasColumns()) {
+                int[] first = {sentence.lines().getFirst(), sentence.flow().columnAt(sentence.start()) + 1};
+                int[] last = {sentence.lines().getLast(), sentence.flow().columnAt(sentence.end() - 1) + 1};
+                if (within(range, first) && within(range, last)) {
+                    touched.add(sentence);
+                    pieces.add(new int[] {touched.size() - 1, -1, -1});
+                }
+                continue;
+            }
+            for (LineRange.Fragment fragment : range.fragments()) {
+                int[] covered = covered(sentence, fragment);
+                if (covered == null) {
+                    continue;
+                }
+                if (touched.isEmpty() || touched.getLast() != sentence) {
+                    touched.add(sentence);
+                }
+                boolean whole = covered[0] == 0 && covered[1] == sentence.text().length();
+                pieces.add(new int[] {touched.size() - 1, whole ? -1 : covered[0], whole ? -1 : covered[1]});
             }
         }
         Annotation annotation = a.annotation();
         String annotator = annotation.by() != null
                 ? "author:" + annotation.by().uuid()
                 : "email:" + a.commit().getAuthorIdent().getEmailAddress().toLowerCase(java.util.Locale.ROOT);
-        sentences.addAll(replay.sentencesReading(covered));
-        // a column range lands on the lines it holds whole; the lines it shares with other sentences keep their own judgments
-        int from = range.from();
-        int to = range.to();
-        if (range.hasColumns()) {
-            if (!revLines.get(from - 1).substring(0, range.fromColumn() - 1).isBlank()) {
+        List<SegmentId> current = replay.sentencesReadingEach(touched.stream().map(Segmenter.Sentence::text).toList());
+        for (int[] piece : pieces) {
+            SegmentId id = current.get(piece[0]);
+            if (id == null) {
+                continue;                                        // revised since the annotator read it
+            }
+            String text = touched.get(piece[0]).text();
+            fragments.add(piece[1] < 0 ? CommitEvent.SentenceFragment.whole(id, text)
+                    : new CommitEvent.SentenceFragment(id, piece[1], piece[2], text.substring(piece[1], piece[2])));
+        }
+        // a column range lands on the lines each fragment holds whole; the lines it shares with other text keep their own judgments
+        if (!range.hasColumns()) {
+            return replay.annotate(replay.recordFor(a.commit(), range.file().toString()), a.kind(), annotator, revText, range.from(), range.to());
+        }
+        List<LineId> applied = new ArrayList<>();
+        for (LineRange.Fragment fragment : range.fragments()) {
+            int from = fragment.from();
+            int to = fragment.to();
+            if (!revLines.get(from - 1).substring(0, fragment.fromColumn() - 1).isBlank()) {
                 from++;
             }
-            if (!revLines.get(to - 1).substring(range.toColumn()).isBlank()) {
+            if (!revLines.get(to - 1).substring(fragment.toColumn()).isBlank()) {
                 to--;
             }
+            if (from <= to) {
+                for (LineId line : replay.annotate(replay.recordFor(a.commit(), range.file().toString()), a.kind(), annotator, revText, from, to)) {
+                    if (!applied.contains(line)) {
+                        applied.add(line);
+                    }
+                }
+            }
         }
-        if (from > to) {
-            return List.of();
+        return applied;
+    }
+
+    /**
+     * The part of a sentence a fragment covers, as columns of the sentence's normalized text.
+     *
+     * @return the first column and one past the last; null when the fragment covers none of its words
+     */
+    private static int[] covered(Segmenter.Sentence sentence, LineRange.Fragment fragment) {
+        Flow flow = sentence.flow();
+        int first = -1;
+        int last = -1;
+        for (int o = sentence.start(); o < sentence.end(); o++) {
+            if (Character.isWhitespace(flow.text().charAt(o))) {
+                continue;
+            }
+            int line = flow.parts().get(flow.partAt(o)).line();
+            int column = flow.columnAt(o) + 1;
+            boolean inside = line >= fragment.from() && line <= fragment.to()
+                    && !(line == fragment.from() && column < fragment.fromColumn())
+                    && !(line == fragment.to() && column > fragment.toColumn());
+            if (inside) {
+                if (first < 0) {
+                    first = o;
+                }
+                last = o;
+            }
         }
-        return replay.annotate(replay.recordFor(a.commit(), range.file().toString()), a.kind(), annotator,
-                revText, from, to);
+        return first < 0 ? null : new int[] {sentence.column(first), sentence.column(last) + 1};
     }
 
     /** Whether a 1-based line and column lies within a range: its lines, and its columns at either end. */

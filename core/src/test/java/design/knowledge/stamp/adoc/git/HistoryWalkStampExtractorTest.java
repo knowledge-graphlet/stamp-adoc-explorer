@@ -13,6 +13,7 @@ import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.AnnotationTarget;
 import design.knowledge.stamp.adoc.model.CommitEvent;
+import design.knowledge.stamp.adoc.model.KonceptRef;
 import design.knowledge.stamp.adoc.model.LineId;
 import design.knowledge.stamp.adoc.model.SegmentId;
 import design.knowledge.stamp.adoc.model.StampHistory;
@@ -189,9 +190,9 @@ class HistoryWalkStampExtractorTest {
 
         assertFalse(head.stamps().containsKey(id(wrongHash)));
         assertFalse(head.stamps().containsKey(id(malformed)));
-        assertFalse(head.stamps().containsKey(id(unknownKind)));
-        assertEquals(3, head.problems().size(), head.problems().toString());
-        assertTrue(head.problems().get(0).contains("unknown annotation kind"), "newest commit first: " + head.problems());
+        assertFalse(head.stamps().containsKey(id(unknownKind)), "another meaning is passed on, not marked on lines");
+        assertEquals(2, head.problems().size(), "a meaning the engine does not know is no problem: " + head.problems());
+        assertTrue(head.problems().get(0).contains("not an Annotation value"), "newest commit first: " + head.problems());
         assertEquals(List.of(sha(a), sha(a)), attribution("doc.adoc"));
     }
 
@@ -524,12 +525,66 @@ class HistoryWalkStampExtractorTest {
     }
 
     @Test
-    void aColumnRangeCoveringPartOfASentenceIsRefused() throws Exception {
+    void aColumnRangeCoveringPartOfASentenceAnnotatesThatFragment() throws Exception {
         RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes it.");
+        // line 1 columns 1 to 30: the first sentence whole, and "A machine" of the second
         annotateColumns(AnnotationKind.AFFIRMATION, "bob", "doc.adoc", 1, 1, 1, 30, a);
         StampHistory history = historyOf("doc.adoc");
-        assertTrue(history.events().getLast().annotations().isEmpty(), "not applied");
-        assertTrue(history.atHead().problems().stream().anyMatch(p -> p.contains("part of a sentence")), history.atHead().problems().toString());
+        CommitEvent.AnnotationEvent affirmed = history.events().getLast().annotations().getFirst();
+        SegmentId first = new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 1);
+        SegmentId second = new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 2);
+        assertEquals(List.of(CommitEvent.SentenceFragment.whole(first, "The lease is a loan."),
+                new CommitEvent.SentenceFragment(second, 0, 9, "A machine")), affirmed.fragments());
+        assertEquals(List.of(), affirmed.lines(), "the line holds more than the range");
+        assertTrue(history.atHead().problems().isEmpty(), history.atHead().problems().toString());
+    }
+
+    @Test
+    void fragmentsWithGapsMayShareAWord() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "Patient denies fever. No nausea, vomiting, or diarrhea.");
+        // "No" is columns 23-24; "nausea" 26-31; "vomiting" 34-41; "diarrhea" 47-54
+        Annotation nausea = Annotation.of(AnnotationKind.COMMENT, fragments("doc.adoc", a, new LineRange.Fragment(1, 23, 1, 24),
+                new LineRange.Fragment(1, 26, 1, 31)));
+        Annotation vomiting = Annotation.of(AnnotationKind.COMMENT, fragments("doc.adoc", a, new LineRange.Fragment(1, 23, 1, 24),
+                new LineRange.Fragment(1, 34, 1, 41)));
+        Annotation diarrhea = Annotation.of(AnnotationKind.COMMENT, fragments("doc.adoc", a, new LineRange.Fragment(1, 23, 1, 24),
+                new LineRange.Fragment(1, 47, 1, 54)));
+        emptyCommit("bob", "Comment on three negated findings\n\n" + nausea.trailer() + "\n" + vomiting.trailer() + "\n" + diarrhea.trailer() + "\n");
+        List<CommitEvent.AnnotationEvent> annotations = historyOf("doc.adoc").events().getLast().annotations();
+        SegmentId sentence = new SegmentId(SegmentId.Kind.SENTENCE, a.name(), "doc.adoc", 2);
+        assertEquals(3, annotations.size());
+        for (int i = 0; i < 3; i++) {
+            List<CommitEvent.SentenceFragment> pieces = annotations.get(i).fragments();
+            assertEquals(new CommitEvent.SentenceFragment(sentence, 0, 2, "No"), pieces.getFirst(), "every one holds the shared word");
+            assertEquals(List.of("nausea", "vomiting", "diarrhea").get(i), pieces.getLast().words());
+            assertEquals(List.of(sentence, sentence), annotations.get(i).sentences(), "one sentence, two fragments");
+        }
+    }
+
+    @Test
+    void aMeaningTheEngineDoesNotKnowIsPassedOnAndMarksNoLine() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "Patient, accompanied by her daughter, reports blurred vision.");
+        KonceptRef notClinical = new KonceptRef(java.util.UUID.fromString("5e2a1c0e-0f6b-5d3e-9a5c-6b7f1d2e3a4b"), "Not clinical");
+        Annotation mark = new Annotation(notClinical, fragments("doc.adoc", a, new LineRange.Fragment(1, 10, 1, 36)), null, null, null);
+        RevCommit marked = emptyCommit("bob", "Annotate doc.adoc as Not clinical\n\n" + mark.trailer() + "\n");
+        StampHistory history = historyOf("doc.adoc");
+        CommitEvent.AnnotationEvent event = history.events().getLast().annotations().getFirst();
+        assertEquals(null, event.kind(), "no kind the engine gives behaviour");
+        assertEquals(notClinical, event.meaning());
+        assertEquals("accompanied by her daughter", event.fragments().getFirst().words());
+        assertTrue(history.atHead().problems().isEmpty(), history.atHead().problems().toString());
+        assertFalse(history.atHead().stamps().containsKey(id(marked)), "no line bitmap carries another meaning");
+    }
+
+    @Test
+    void aFragmentFollowsItsSentenceThroughAReflow() throws Exception {
+        RevCommit a = commit("doc.adoc", "alice", "The lease is a loan. A machine takes it,", "renews it.");
+        annotateColumns(AnnotationKind.COMMENT, "bob", "doc.adoc", 1, 22, 1, 30, a);
+        commit("doc.adoc", "carol", "The lease is a loan.", "A machine takes it, renews it.");
+        List<CommitEvent> events = historyOf("doc.adoc").events();
+        CommitEvent.SentenceFragment fragment = events.get(1).annotations().getFirst().fragments().getFirst();
+        assertEquals(new CommitEvent.SentenceFragment(events.getLast().segments().manifest().get(1), 0, 9, "A machine"), fragment,
+                "columns count in the sentence's text, so the reflow moves nothing");
     }
 
     @Test
@@ -551,6 +606,12 @@ class HistoryWalkStampExtractorTest {
         }
         Annotation a = Annotation.of(kind, LineRange.of(Path.of(file), from, fromColumn, to, toColumn, rev.name(), content));
         return emptyCommit(author, kind.verb() + " " + file + "\n\n" + a.trailer() + "\n");
+    }
+
+    private LineRange fragments(String file, RevCommit rev, LineRange.Fragment... fragments) throws IOException {
+        try (GitRepo repo = GitRepo.open(root)) {
+            return LineRange.of(Path.of(file), List.of(fragments), rev.name(), repo.linesAt(rev.name(), Path.of(file)));
+        }
     }
 
     private StampFile stampsOf(String file) throws IOException {

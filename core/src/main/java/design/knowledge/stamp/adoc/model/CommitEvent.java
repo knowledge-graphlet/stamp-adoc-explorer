@@ -70,29 +70,58 @@ public record CommitEvent(
      * @param annotation  the parsed trailer
      * @param index       the trailer's position among the commit's {@code Annotation:} trailers, 0-based;
      *                    with the commit SHA it names the annotation when the trailer carries no {@code id}
-     * @param kind        the annotation's kind
+     * @param kind        the annotation's kind when the engine knows it; null for any other meaning, which
+     *                    {@link #meaning()} names and which accumulates as a comment does
      * @param lines       the identities of the annotated lines, in order
      * @param reviewedSha the full SHA of the last commit that changed the file at or before the
      *                    range's anchoring revision: the version the annotator saw
      * @param text        the commit body, without subject and trailers; empty when there is none
-     * @param sentences   the sentences the range covers whole, as the annotator read them, by their current
-     *                    identities (IKE-Network/ike-issues#1313); a sentence revised since is not among them
+     * @param fragments   the sentences the range covers, whole or in part, as the annotator read them, by their
+     *                    current identities, in order (IKE-Network/ike-issues#1313; the segments design's decision 9,
+     *                    revised 2026-10-31); a sentence revised since is not among them
      * @param retracts    for a {@link AnnotationKind#RETRACTION}, the annotations of this file the retracted commit
      *                    recorded, which are no longer in force; {@code lines} are then the lines that lost them;
      *                    empty for every other kind
      */
     public record AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines,
-                                  String reviewedSha, String text, List<SegmentId> sentences, List<AnnotationRef> retracts) {
+                                  String reviewedSha, String text, List<SentenceFragment> fragments, List<AnnotationRef> retracts) {
 
         /** An annotation on lines alone. */
         public AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines, String reviewedSha, String text) {
             this(annotation, index, kind, lines, reviewedSha, text, List.of(), List.of());
         }
 
-        /** An annotation on lines and the sentences they cover whole. */
-        public AnnotationEvent(Annotation annotation, int index, AnnotationKind kind, List<LineId> lines, String reviewedSha, String text,
-                               List<SegmentId> sentences) {
-            this(annotation, index, kind, lines, reviewedSha, text, sentences, List.of());
+        /** @return what the annotation says: its kind concept, known to the engine or not */
+        public KonceptRef meaning() {
+            return annotation.kind();
+        }
+
+        /** @return the sentence of each fragment, in order; a sentence holding two fragments appears twice */
+        public List<SegmentId> sentences() {
+            return fragments.stream().map(SentenceFragment::sentence).toList();
+        }
+    }
+
+    /**
+     * The part of one sentence an annotation covers: all of it, or the characters from {@code start}
+     * to {@code end} of its whitespace-normalized text, with the words there as the annotator read
+     * them.
+     *
+     * @param sentence the sentence, by its current identity
+     * @param start    the first column in its text, 0-based; -1 for the whole sentence
+     * @param end      one past the last; -1 for the whole sentence
+     * @param words    the words covered; the sentence's whole text for the whole sentence
+     */
+    public record SentenceFragment(SegmentId sentence, int start, int end, String words) {
+
+        /** The whole sentence. */
+        public static SentenceFragment whole(SegmentId sentence, String text) {
+            return new SentenceFragment(sentence, -1, -1, text);
+        }
+
+        /** @return whether the fragment is the whole sentence */
+        public boolean isWhole() {
+            return start < 0;
         }
     }
 

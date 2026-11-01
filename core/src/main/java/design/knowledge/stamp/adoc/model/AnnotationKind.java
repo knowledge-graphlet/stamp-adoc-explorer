@@ -20,9 +20,12 @@ import java.util.UUID;
  * rule the starter set mints every concept by. The fully qualified names are
  * therefore frozen: commit messages carry these UUIDs.
  *
- * <p>An {@code Annotation:} trailer whose kind is none of these is reported by
- * the walker rather than guessed at; a new kind is a new starter-set concept
- * and a new constant here.
+ * <p>These are the kinds the engine gives behaviour: a judgment supersedes the
+ * same annotator's earlier judgment, and a retraction withdraws a commit. An
+ * {@code Annotation:} trailer may name any other concept as its meaning, such
+ * as {@code Not clinical}; the walker passes it on by its concept, and it
+ * accumulates as a comment does (the segments design's decision 9, revised
+ * 2026-10-31). A kind with behaviour of its own is a new constant here.
  */
 public enum AnnotationKind {
 

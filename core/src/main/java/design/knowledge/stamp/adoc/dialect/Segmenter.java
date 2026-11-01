@@ -11,6 +11,7 @@ package design.knowledge.stamp.adoc.dialect;
 
 import design.knowledge.stamp.adoc.dialect.InlineMarkup.Element;
 import design.knowledge.stamp.adoc.dialect.InlineMarkup.Span;
+import design.knowledge.stamp.adoc.model.LineRange;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +57,62 @@ public final class Segmenter {
         /** @return the 1-based lines it spans */
         public List<Integer> lines() {
             return flow.lines(start, end);
+        }
+
+        /**
+         * Where a character of the flow lands in {@link #text()}: whitespace runs collapse, so a
+         * reflow moves no column.
+         *
+         * @param offset an offset into the flow's text, from {@link #start()} to {@link #end()}
+         * @return the column in the sentence's text, 0-based; {@code text().length()} at the end
+         */
+        public int column(int offset) {
+            if (offset >= end) {
+                return text.length();
+            }
+            // a sentinel after the prefix keeps its trailing whitespace counted as the one space it collapses to
+            return normalize(flow.text().substring(start, Math.max(start, offset)) + "x").length() - 1;
+        }
+
+        /**
+         * The flow offset of a column of {@link #text()}.
+         *
+         * @param column a column in the sentence's text, 0 to {@code text().length()}
+         * @return the offset of that character in the flow's text; {@link #end()} at the end
+         */
+        public int offset(int column) {
+            if (column >= text.length()) {
+                return end;
+            }
+            for (int o = start; o < end; o++) {
+                if (!Character.isWhitespace(flow.text().charAt(o)) && column(o) == column) {
+                    return o;
+                }
+            }
+            for (int o = start; o < end; o++) {                  // a column on a collapsed space: its run's first character
+                if (column(o) == column) {
+                    return o;
+                }
+            }
+            return end;
+        }
+
+        /**
+         * The characters of the sentence's text from {@code from} to {@code to}, as a stretch of the
+         * file's lines: what a column-qualified annotation trailer names.
+         *
+         * @param from the first column in the sentence's text, inclusive
+         * @param to   one past the last
+         * @return the fragment, 1-based and inclusive
+         */
+        public LineRange.Fragment fragment(int from, int to) {
+            if (from < 0 || to > text.length() || to <= from) {
+                throw new IllegalArgumentException("no characters " + from + "-" + to + " in a sentence of " + text.length());
+            }
+            int first = offset(from);
+            int last = offset(to - 1);
+            return new LineRange.Fragment(flow.parts().get(flow.partAt(first)).line(),
+                    flow.columnAt(first) + 1, flow.parts().get(flow.partAt(last)).line(), flow.columnAt(last) + 1);
         }
     }
 

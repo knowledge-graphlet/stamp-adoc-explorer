@@ -12,6 +12,7 @@ package design.knowledge.stamp.adoc.dialect;
 import design.knowledge.stamp.adoc.dialect.InlineMarkup.Element;
 import design.knowledge.stamp.adoc.dialect.Segmenter.Segmentation;
 import design.knowledge.stamp.adoc.dialect.Segmenter.Sentence;
+import design.knowledge.stamp.adoc.model.LineRange;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -86,6 +87,19 @@ class SegmenterTest {
         Sentence see = segments.sentences().get(index + 2);
         assertEquals(Element.CROSS_REFERENCE, segments.inlines().get(see.inlines().getFirst()).element(),
                 "an element inside a footnote belongs to the footnote's sentence");
+    }
+
+    @Test
+    void aSentenceColumnIsReflowInvariantAndNamesItsLinesAndColumns() {
+        // "nausea" sits on line 2 after a run of spaces the sentence's text collapses to one
+        Sentence sentence = Segmenter.of(IkeDialectParser.parse(List.of("Patient denies fever. No", "   nausea, vomiting, or diarrhea.")))
+                .sentences().get(1);
+        assertEquals("No nausea, vomiting, or diarrhea.", sentence.text());
+        int nausea = sentence.text().indexOf("nausea");
+        assertEquals(nausea, sentence.column(sentence.offset(nausea)));
+        assertEquals(new LineRange.Fragment(2, 4, 2, 9), sentence.fragment(nausea, nausea + "nausea".length()));
+        assertEquals(new LineRange.Fragment(1, 23, 2, 9), sentence.fragment(0, nausea + "nausea".length()), "across the line break");
+        assertEquals(sentence.text().length(), sentence.column(sentence.end()));
     }
 
     @Test
