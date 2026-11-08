@@ -11,6 +11,9 @@ package design.knowledge.stamp.adoc.git;
 
 import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
+import design.knowledge.stamp.adoc.model.AnnotationTarget;
+import design.knowledge.stamp.adoc.model.CommitEvent;
+import design.knowledge.stamp.adoc.model.KonceptRef;
 import design.knowledge.stamp.adoc.model.LineRange;
 import design.knowledge.stamp.adoc.model.StampFile;
 import design.knowledge.stamp.adoc.model.StampRecord;
@@ -20,8 +23,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -102,6 +107,57 @@ class AnnotationCommitTest {
                 String text = repo.stampHistoryOf(Path.of("doc.adoc")).events().getLast().annotations().get(0).text();
                 assertEquals("Three is wrong.", text);
                 assertTrue(after.problems().isEmpty(), after.problems().toString());
+            }
+        }
+    }
+
+    /**
+     * A comment on a commit's STAMP, as the commit narrator writes it (IKE-Network/ike-issues#1355): the walker
+     * hands it on with the file whose commit it is about, on no lines, carrying the commit, its text and its
+     * identity, so a store rebuilt from git recreates it with the same identity. A comment on a commit that did
+     * not touch the file is not the file's.
+     */
+    @Test
+    void aCommentOnACommitsStampGoesWithTheFileItChanged() throws Exception {
+        try (Git git = Git.init().setDirectory(root.toFile()).setInitialBranch("main").call()) {
+            Files.writeString(root.resolve("doc.adoc"), "one\ntwo\n");
+            git.add().addFilepattern("doc.adoc").call();
+            String narrated = git.commit().setAuthor("alice", "alice@example.test").setCommitter("alice", "alice@example.test")
+                    .setMessage("add").call().name();
+            Files.writeString(root.resolve("other.adoc"), "elsewhere\n");
+            git.add().addFilepattern("other.adoc").call();
+            String elsewhere = git.commit().setAuthor("alice", "alice@example.test").setCommitter("alice", "alice@example.test")
+                    .setMessage("other").call().name();
+            new ProcessBuilder("git", "config", "user.name", "Rita Reviewer").directory(root.toFile()).start().waitFor();
+            new ProcessBuilder("git", "config", "user.email", "rita@example.test").directory(root.toFile()).start().waitFor();
+            KonceptRef narrator = new KonceptRef(UUID.fromString("06f3a6e6-3627-5115-94fb-238c789b8743"), "Komet Narrator (Claude)");
+            UUID id = UUID.fromString("5e2a5d0c-1b7e-5c3a-9d4f-0a1b2c3d4e5f");
+            Instant at = Instant.parse("2026-11-08T18:00:00Z");
+            Annotation onDoc = new Annotation(AnnotationKind.COMMENT.ref(),
+                    new AnnotationTarget.ChangeSet(new KonceptRef(HistoryWalkStampExtractor.stampOf(narrated), narrated.substring(0, 7))),
+                    narrator, at, id);
+            Annotation onOther = new Annotation(AnnotationKind.COMMENT.ref(),
+                    new AnnotationTarget.ChangeSet(new KonceptRef(HistoryWalkStampExtractor.stampOf(elsewhere), elsewhere.substring(0, 7))),
+                    narrator, at, UUID.fromString("6f3b6e1d-2c8f-5d4b-8e5a-1b2c3d4e5f60"));
+
+            assertEquals("Comment on " + narrated.substring(0, 7), AnnotationCommit.subject(List.of(onDoc)));
+            AnnotationCommit.Result result = AnnotationCommit.write(root, List.of(onDoc), "Alice added the first two lines.", false);
+            assertTrue(result.ok(), result.output());
+            assertTrue(AnnotationCommit.write(root, List.of(onOther), "Another file.", false).ok());
+
+            try (GitRepo repo = GitRepo.open(root)) {
+                List<CommitEvent.AnnotationEvent> comments = repo.stampHistoryOf(Path.of("doc.adoc")).events().stream()
+                        .flatMap(event -> event.annotations().stream()).toList();
+                assertEquals(1, comments.size(), "only the comment on a commit that changed doc.adoc");
+                CommitEvent.AnnotationEvent comment = comments.getFirst();
+                assertEquals(narrated, comment.reviewedSha(), "the commit it is about");
+                assertTrue(comment.lines().isEmpty(), "on no lines");
+                assertEquals("Alice added the first two lines.", comment.text());
+                assertEquals(id, comment.annotation().id());
+                assertEquals(narrator, comment.annotation().by());
+                assertEquals(at, comment.annotation().at());
+                assertEquals(AnnotationKind.COMMENT, comment.kind());
+                assertTrue(repo.stampHistoryOf(Path.of("doc.adoc")).atHead().problems().isEmpty());
             }
         }
     }

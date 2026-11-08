@@ -68,6 +68,11 @@ public final class AnnotationCommit {
         if (commits.size() == annotations.size()) {
             return verb + " " + commits.stream().map(AnnotationTarget.Commit::shortRevision).collect(Collectors.joining(", "));
         }
+        List<AnnotationTarget.ChangeSet> stamps = annotations.stream().map(Annotation::target)
+                .filter(AnnotationTarget.ChangeSet.class::isInstance).map(AnnotationTarget.ChangeSet.class::cast).toList();
+        if (stamps.size() == annotations.size()) {
+            return verb + " " + stamps.stream().map(stamp -> stamp.stamp().label()).distinct().collect(Collectors.joining(", ")) + as;
+        }
         List<LineRange> ranges = annotations.stream().flatMap(a -> a.lineRange().stream()).toList();
         if (ranges.size() == annotations.size() && ranges.stream().map(LineRange::gitPath).distinct().count() == 1) {
             return verb + " " + ranges.get(0).gitPath() + " "

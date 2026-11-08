@@ -13,6 +13,8 @@ import design.knowledge.stamp.adoc.dialect.Flow;
 import design.knowledge.stamp.adoc.dialect.IkeDialectParser;
 import design.knowledge.stamp.adoc.dialect.Segmenter;
 import design.knowledge.stamp.adoc.dialect.TextPairing;
+import design.knowledge.stamp.adoc.identity.GitIdentityAdapter;
+import design.knowledge.stamp.adoc.identity.Uuid5;
 import design.knowledge.stamp.adoc.model.Annotation;
 import design.knowledge.stamp.adoc.model.AnnotationKind;
 import design.knowledge.stamp.adoc.model.AnnotationTarget;
@@ -59,6 +61,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.TreeMap;
 
 /**
@@ -137,7 +140,12 @@ final class HistoryWalkStampExtractor {
      * retracted commit recorded ({@code range} is then null).
      */
     private record Annot(RevCommit commit, int index, Annotation annotation, AnnotationKind kind, LineRange range, String text,   // kind null: a meaning the engine does not know
-                         List<CommitEvent.AnnotationRef> retracts) { }
+                         List<CommitEvent.AnnotationRef> retracts, String stampSha) {   // stampSha: the commit a STAMP-targeted annotation is about
+        Annot(RevCommit commit, int index, Annotation annotation, AnnotationKind kind, LineRange range, String text,
+              List<CommitEvent.AnnotationRef> retracts) {
+            this(commit, index, annotation, kind, range, text, retracts, null);
+        }
+    }
 
     /**
      * Compute the {@link StampHistory} for the configured file.
@@ -164,7 +172,12 @@ final class HistoryWalkStampExtractor {
             for (Touch t : touched) {
                 names.add(t.pathAtCommit());
             }
-            walkChain(head, chain, annots, names, problems);
+            // A commit's STAMP, as an annotation names it: the identity the adapter derives from its SHA.
+            Map<UUID, String> stamps = new HashMap<>();
+            for (Touch t : touched) {
+                stamps.put(stampOf(t.commit().name()), t.commit().name());
+            }
+            walkChain(head, chain, annots, names, stamps, problems);
             for (Touch t : touched) {
                 touches.put(chain.get(t.commit().name()), t);
             }
@@ -186,6 +199,10 @@ final class HistoryWalkStampExtractor {
                 CommitEvent.Segments segments = t != null ? replay.segment(t) : replay.segmentsUnchanged();
                 List<CommitEvent.AnnotationEvent> applied = new ArrayList<>();
                 for (Annot a : annots.getOrDefault(index, List.of())) {
+                    if (a.stampSha() != null) {
+                        applied.add(new CommitEvent.AnnotationEvent(a.annotation(), a.index(), a.kind(), List.of(), a.stampSha(), a.text()));
+                        continue;
+                    }
                     List<CommitEvent.SentenceFragment> fragments = new ArrayList<>();
                     List<LineId> lines = applyAnnotation(replay, a, chain, touches, problems, fragments);
                     if (lines != null) {
@@ -207,6 +224,16 @@ final class HistoryWalkStampExtractor {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /**
+     * A commit's STAMP identity, as an annotation targeting the commit's STAMP names it.
+     *
+     * @param sha the commit's full SHA
+     * @return the identity {@link GitIdentityAdapter#stamp} derives
+     */
+    static UUID stampOf(String sha) {
+        return Uuid5.of(GitIdentityAdapter.NAMESPACE, "stamp:" + sha.toLowerCase(java.util.Locale.ROOT));
     }
 
     private static CommitEvent.Commit commitOf(RevCommit commit) {
@@ -279,7 +306,7 @@ final class HistoryWalkStampExtractor {
     // ── 1a. the chain: every first-parent commit, numbered from HEAD, with its trailers ──
 
     private void walkChain(ObjectId head, Map<String, Integer> chain, Map<Integer, List<Annot>> annots, Set<String> names,
-                           List<String> problems) throws IOException {
+                           Map<UUID, String> stamps, List<String> problems) throws IOException {
         try (RevWalk walk = new RevWalk(repository)) {
             walk.setFirstParent(true);
             walk.markStart(walk.parseCommit(head));
@@ -312,6 +339,21 @@ final class HistoryWalkStampExtractor {
                                     .add(new Annot(commit, position, parsed, kind, null, bodyOf(commit), retracts));
                         }
                         continue;                                // about another file's annotations, or reported
+                    }
+                    if (parsed.target() instanceof AnnotationTarget.ChangeSet changeSet) {
+                        // About one of this file's commits as a whole, as a narration is: it goes with the file,
+                        // on no lines (IKE-Network/ike-issues#1355). About another file's commit, or the graph: skipped.
+                        String about = stamps.get(changeSet.stamp().uuid());
+                        if (about == null) {
+                            continue;
+                        }
+                        if (kind == AnnotationKind.RETRACTION) {
+                            problems.add(commit.abbreviate(7).name() + " " + parsed.value() + ": a retraction names a commit, not a STAMP");
+                            continue;
+                        }
+                        annots.computeIfAbsent(index, k -> new ArrayList<>())
+                                .add(new Annot(commit, position, parsed, kind, null, bodyOf(commit), List.of(), about));
+                        continue;
                     }
                     if (!(parsed.target() instanceof LineRange range) || !names.contains(range.gitPath())) {
                         continue;                                // about another file, or about the graph
